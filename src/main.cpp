@@ -30,6 +30,8 @@
 #define PWM_RES     8           // 8 bit felbontás → 0–255
 #define MAX_COLORS  25          // Maximum tárolható szín
 
+#define TESZTWIFI  // Teszt WiFi hálózatok (csak fejlesztéshez, élesben kommenteld ki)
+
 // ─────────────────────────────────────────────
 //  WiFi AP konfiguráció
 // ─────────────────────────────────────────────
@@ -65,6 +67,7 @@ int        activeIndex = 0;     // Aktív szín indexe
 Preferences    prefs;
 AsyncWebServer server(80);
 DNSServer      dnsServer;
+AsyncWebSocket ws("/ws");
 
 IPAddress local_ip(192, 168, 99, 9);
 IPAddress gateway (192, 168, 99, 9);
@@ -261,6 +264,7 @@ void handleWsMessage(AsyncWebSocketClient* client, const String& msg) {
                 colors[idx].freq = (uint16_t)constrain(freq, 1, 40000);
                 activeIndex = idx;
                 applyPWM(colors[idx].r, colors[idx].g, colors[idx].b, colors[idx].freq);
+                if (client) client->text(buildStatusJson());
             }
         }
     }
@@ -416,7 +420,6 @@ void startWifi() {
     }
 
     // WebSocket
-    static AsyncWebSocket ws("/ws");
     ws.onEvent(onWsEvent);
     server.addHandler(&ws);
 
@@ -528,12 +531,19 @@ void setup() {
     // Az első boot után a jumper zárt állapota elegendő az AP indításhoz,
     // de csak ha gombot is nyomtak (ébresztés után jártunk).
     // OTA utáni újrainduláskor (cause != EXT0) a jumper vizsgálata elegendő.
+#ifdef TESZTWIFI
+     ESP_LOGI(TAGMAIN, "TESZTWIFI mod: WiFi mindig indul.");
+     startWifi();
+     return;
+#endif
+#ifndef TESZTWIFI
     if (digitalRead(PIN_WIFIEN) == LOW) {
         if (cause == ESP_SLEEP_WAKEUP_EXT0 || cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
             // Lefutó él volt (gomb) ÉS jumper zárt → WiFi indítás
             startWifi();
         }
     }
+#endif
 }
 
 // ─────────────────────────────────────────────
@@ -586,6 +596,7 @@ void loop() {
             saveIndexAndTimer();
             // Időzítő újraindítása
             activeStartMs = millis();
+            ws.textAll(buildStatusJson());
             ESP_LOGI(TAGMAIN, "Szin leptetés -> %d (%s)", activeIndex, colors[activeIndex].name);
         }
     }

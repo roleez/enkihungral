@@ -55,9 +55,12 @@ A weblap WebSocket kapcsolaton keresztül kommunikál az eszközzel, valós idej
 | **Rendszerfrissítés (OTA)** | Átirányít a `/update` oldalra, ahol firmware frissíthető |
 
 ### WebSocket protokoll (belső)
-SET:<idx>:<r>:<g>:<b>:<freq> → PWM azonnali frissítés NAME:<idx>:<név> → Szín nevének módosítása SLEEP:<perc> → Alvási idő beállítása SAVE → Minden adat mentése flash-be ADD → Új szín hozzáadása DEL:<idx> → Szín törlése
-
----
+- `SET:<idx>:<r>:<g>:<b>:<freq>` → PWM azonnali frissítés
+- `NAME:<idx>:<név>` → Szín nevének módosítása
+- `SLEEP:<perc>` → Alvási idő beállítása
+- `SAVE` → Minden adat mentése flash-be
+- `ADD` → Új szín hozzáadása
+- `DEL:<idx>` → Szín törlése
 
 ## Alvási időzítő
 

@@ -88,6 +88,17 @@ const char INDEX_HTML[] PROGMEM = R"rawhtml(
   }
   .ws-badge.connected { color: var(--accent2); border-color: var(--accent2); }
 
+  /* ── Aktív szín státusz sor ───────────────────── */
+  .active-color-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.6rem 1rem;
+    margin-bottom: 1.2rem;
+  }
   /* ── Akkufeszültség kártya ──────────────────────── */
   .batt-card {
     background: var(--surface);
@@ -334,6 +345,18 @@ const char INDEX_HTML[] PROGMEM = R"rawhtml(
   <div class="ws-badge" id="wsBadge">● OFFLINE</div>
 </header>
 
+<!-- Aktív szín státusz sor -->
+<div class="active-color-bar" id="activeColorBar">
+  <span class="color-dot" id="activeBarDot" style="width:35px;height:35px;margin-right:8px"></span>
+  <span id="activeBarName" style="font-family:var(--mono);font-size:0.85rem;flex:1">—</span>
+  <span style="font-family:var(--mono);font-size:0.78rem;color:var(--muted)">
+    R:<span id="activeBarR">—</span>
+    G:<span id="activeBarG">—</span>
+    B:<span id="activeBarB">—</span>
+    Freq:<span id="activeBarF">—</span>
+  </span>
+</div>
+
 <!-- Akkufeszültség -->
 <div class="batt-card">
   <div class="batt-icon">🔋</div>
@@ -440,6 +463,7 @@ function applyState(d) {
     colors      = d.colors;
     activeIndex = d.activeIndex ?? -1;
     renderList();
+    updateActiveDot();
   }
 }
 
@@ -577,6 +601,7 @@ function bindRowEvents() {
 function updateHighlight(idx) {
   document.querySelectorAll('.color-row').forEach((r, i) =>
     r.classList.toggle('active-row', i === idx));
+  updateActiveDot();
 }
 
 // ────────────────────────────────────────────
@@ -616,6 +641,37 @@ document.getElementById('btnOta').addEventListener('click', () => {
 // ────────────────────────────────────────────
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ────────────────────────────────────────────
+//  Aktív szín pötty + státusz sor frissítése
+// ────────────────────────────────────────────
+function updateActiveDot() {
+  if (activeIndex < 0 || activeIndex >= colors.length) return;
+  const c   = colors[activeIndex];
+  const rgb = `rgb(${c.r},${c.g},${c.b})`;
+
+  const dot = document.getElementById('activeDot');
+  if (dot) {
+    dot.style.background = rgb;
+    dot.style.boxShadow  = `0 0 12px ${rgb}`;
+  }
+
+  const barDot = document.getElementById('activeBarDot');
+  if (barDot) {
+    barDot.style.background = rgb;
+    barDot.style.boxShadow  = `0 0 6px ${rgb}88`;
+  }
+  const nameEl = document.getElementById('activeBarName');
+  const rEl    = document.getElementById('activeBarR');
+  const gEl    = document.getElementById('activeBarG');
+  const bEl    = document.getElementById('activeBarB');
+  const fEl    = document.getElementById('activeBarF');
+  if (nameEl) nameEl.textContent = c.name || '—';
+  if (rEl)    rEl.textContent    = c.r;
+  if (gEl)    gEl.textContent    = c.g;
+  if (bEl)    bEl.textContent    = c.b;
+  if (fEl)    fEl.textContent    = c.freq + ' Hz';
 }
 
 function debounce(fn, d) {
