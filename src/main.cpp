@@ -30,7 +30,7 @@
 #define PWM_RES     8           // 8 bit felbontás → 0–255
 #define MAX_COLORS  25          // Maximum tárolható szín
 
-#define TESZTWIFI  // Teszt WiFi hálózatok (csak fejlesztéshez, élesben kommenteld ki)
+#undef TESZTWIFI  // Teszt WiFi hálózatok (csak fejlesztéshez, élesben kommenteld ki)
 
 // ─────────────────────────────────────────────
 //  WiFi AP konfiguráció
@@ -126,7 +126,7 @@ void buzzerBeep(uint32_t ms) {
 }
 
 // ─────────────────────────────────────────────
-//  Mélysomba menetel
+//  Mélyálomba megy
 // ─────────────────────────────────────────────
 void goToDeepSleep() {
     ESP_LOGI(TAGMAIN, "Mélyalvás indul...");

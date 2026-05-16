@@ -1,8 +1,22 @@
 # Enki Hungrál – ESP32-C3 RGB LED vezérlő
 
-## Gombkezelés
+## Tartalomjegyzék
+- [Gombkezelés](#gombkezeles)
+  - [Nyomástípusok](#nyomastipusok)
+  - [Konfiguráció](#konfiguracio)
+- [WiFi Funkcionalitás](#wififunc)
+  - [AP adatok](#ap-adatok)
+  - [WiFi engedélyezése](#wifibe)
+  - [WiFi letiltása / leállítás](#wifiki)
+- [Weblap](#weblap)
+  - [Elérhető funkciók](#avalfunc)
+  - [WebSocket protokoll (belső)](#websocket)
+- [Alvási időzítő](#alvas)
+- [Első letöltés](#elso-letoltes)
 
-### Nyomástípusok
+## <a name="gombkezeles"></a>Gombkezelés
+
+### <a name="nyomastipusok"></a>Nyomástípusok
 
 1. **Hosszú Nyomás (ébresztés, ≥5 mp)**:
    - Mélyalvásból (deep sleep) ébreszti az eszközt.
@@ -14,35 +28,35 @@
    - Újraindítja az alvási időzítőt.
    - Az új aktív szín indexét elmenti a flash memóriába.
 
-### Konfiguráció
+### <a name="konfiguracio"></a>Konfiguráció
 A gombkezelés a `loop()` függvényben található. A nyomásidő határok (`500`–`1000` ms) és az ébresztési várakozás (`5000` ms) az `src/main.cpp` fájlban módosíthatók.
 
 ---
 
-## WiFiEN Funkcionalitás
+## <a name="wififunc"></a>WiFi Funkcionalitás
 
 A `PIN_WIFIEN` (GPIO10) jumper az ESP32-C3 WiFi Access Point (AP) módjának kezelésére szolgál. **Az eszköz nem csatlakozik meglévő hálózathoz, hanem saját hozzáférési pontot hoz létre.**
 
-### AP adatok
+### <a name="ap-adatok"></a>AP adatok
 - **SSID:** `ENKILED` (jelszó nélküli, nyílt hálózat)
 - **IP cím:** `192.168.99.9`
 - **mDNS:** `enkiled.local`
 - **Captive portal:** minden DNS kérés az AP IP-re irányítódik
 
-### WiFi engedélyezése
+### <a name="wifibe"></a>WiFi engedélyezése
 - A jumper legyen zárt (`LOW`) **és** az eszköz mélyálomból, gombnyomással ébredjen fel.
 - Ekkor az AP elindul és elérhető a weblap.
 
-### WiFi letiltása / leállítás
+### <a name="wifiki"></a>WiFi letiltása / leállítás
 - Ha a jumpert kihúzzák (felfutó él) és az AP legalább 4 perce fut (és nincs folyamatban OTA frissítés), az eszköz automatikusan újraindul WiFi nélkül.
 
 ---
 
-## Weblap (`http://192.168.99.9` vagy `http://enkiled.local`)
+## <a name="weblap"></a>Weblap (`http://192.168.99.9` vagy `http://enkiled.local`)
 
 A weblap WebSocket kapcsolaton keresztül kommunikál az eszközzel, valós idejű frissítéssel.
 
-### Elérhető funkciók
+### <a name="avalfunc"></a>Elérhető funkciók
 
 | Funkció | Leírás |
 |---|---|
@@ -54,7 +68,7 @@ A weblap WebSocket kapcsolaton keresztül kommunikál az eszközzel, valós idej
 | **Beállítások mentése** | Az összes szín és az alvási idő flash memóriába mentése |
 | **Rendszerfrissítés (OTA)** | Átirányít a `/update` oldalra, ahol firmware frissíthető |
 
-### WebSocket protokoll (belső)
+### <a name="websocket"></a>WebSocket protokoll (belső)
 - `SET:<idx>:<r>:<g>:<b>:<freq>` → PWM azonnali frissítés
 - `NAME:<idx>:<név>` → Szín nevének módosítása
 - `SLEEP:<perc>` → Alvási idő beállítása
@@ -62,9 +76,15 @@ A weblap WebSocket kapcsolaton keresztül kommunikál az eszközzel, valós idej
 - `ADD` → Új szín hozzáadása
 - `DEL:<idx>` → Szín törlése
 
-## Alvási időzítő
+## <a name="alvas"></a>Alvási időzítő
 
 Az eszköz az utolsó interakció (indulás, szín léptető gomb, mentés) után `sleepMinutes` perccel automatikusan mélyálomba (deep sleep) lép:
 1. LED-ek kikapcsolnak.
 2. Buzzer 2 másodpercig szól.
 3. Az eszköz deep sleep módba lép, GPIO3 (nyomógomb) lefutó élre ébred.
+
+## <a name="elso-letoltes"></a>Első letöltés
+
+Legelső firmware letöltésnél USB-C adatkábellel csatlakoztatni kell az ESP32-C3-SuperMini-t PC USB porthoz. Ilyenkor az eszközkezelőben megjelenik két `USB JTAG/serial debug unit` a Portok között. Ekkor BOOT gomb (USB csatlakozó balra az alsó) nyomvatartása alatt az RST gombot (felső gomb) meg kell nyomni, elengedni majd a BOOT-ot is elengedni. Flashelhető állapotba kerül az ESP32. Az eszközkezelőben megnézzük az Interface 0 COM port számát. Ezt használva a letöltésnél az sikeres lesz. Akár Platform.IO, akár direkt esptools-szal működik.
+
+![Eszközkezelő (Win10)](devicemanager.PNG)
