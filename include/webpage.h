@@ -462,7 +462,16 @@ function applyState(d) {
   if (d.colors) {
     colors      = d.colors;
     activeIndex = d.activeIndex ?? -1;
-    renderList();
+
+    // Ne rendereljük újra a listát, ha épp egy input mezőben van a fókusz
+    const focused = document.activeElement;
+    const isEditingList = focused &&
+      focused.tagName === 'INPUT' &&
+      focused.closest('#color-list');
+
+    if (!isEditingList) {
+      renderList();
+    }
     updateActiveDot();
   }
 }

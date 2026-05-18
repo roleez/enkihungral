@@ -14,6 +14,7 @@
 #include <esp_log.h>
 #include <esp_sleep.h>
 #include <esp_wifi.h>
+#include <freertos/semphr.h>
 #include "webpage.h"
 
 // ─────────────────────────────────────────────
@@ -77,6 +78,10 @@ IPAddress subnet  (255, 255, 255, 0);
 bool wifiRunning  = false;
 bool otaStarted   = false;      // Volt-e OTA folyamat
 uint32_t wifiStartMs = 0;
+int lastJumperState;
+static SemaphoreHandle_t g_stateMutex = nullptr;
+#define LOCK_STATE() xSemaphoreTake(g_stateMutex, pdMS_TO_TICKS(50))
+#define UNLOCK_STATE() xSemaphoreGive(g_stateMutex)
 
 // Ébresztési timer (percben, 5–60)
 uint8_t sleepMinutes = 10;
@@ -98,7 +103,7 @@ float readBatteryVoltage() {
     int sum = 0;
     for (int i = 0; i < 8; i++) {
         sum += analogRead(AKKUFESZ);
-        delay(2);
+        vTaskDelay(2);
     }
     float adc_v = (sum / 8.0f) / 4095.0f * 3.3f;
     return adc_v * 1.33f;  // feszültségosztó kompenzáció
@@ -121,7 +126,7 @@ void applyPWM(uint8_t r, uint8_t g, uint8_t b, uint16_t freq) {
 // ─────────────────────────────────────────────
 void buzzerBeep(uint32_t ms) {
     digitalWrite(PIEZO, HIGH);
-    delay(ms);
+    vTaskDelay(ms);
     digitalWrite(PIEZO, LOW);
 }
 
@@ -131,9 +136,20 @@ void buzzerBeep(uint32_t ms) {
 void goToDeepSleep() {
     ESP_LOGI(TAGMAIN, "Mélyalvás indul...");
 
+    if (wifiRunning) {
+      ws.closeAll();
+      WiFi.softAPdisconnect(true);
+      WiFi.mode(WIFI_OFF);
+      esp_wifi_stop();
+      wifiRunning = false;
+      vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
     // LED-ek kikapcsolása
     applyPWM(0, 0, 0, 1000);
-
+    gpio_set_level((gpio_num_t)PIN_R, 0);
+    gpio_set_level((gpio_num_t)PIN_G, 0);
+    gpio_set_level((gpio_num_t)PIN_B, 0);
     // Buzzer: 2 mp szól, majd alvás
     buzzerBeep(2000);
 
@@ -228,6 +244,11 @@ String buildStatusJson() {
 
     float batt = readBatteryVoltage();
 
+    if (LOCK_STATE() != pdTRUE) {
+      // Mutex timeout – minimális valid JSON visszaadása
+      return "{\"error\":\"busy\"}";
+    }
+
     pos += snprintf(buf + pos, sizeof(buf) - pos,
         "{\"batt\":%.2f,\"sleepm\":%d,\"activeIndex\":%d,\"count\":%d,\"colors\":[",
         batt, sleepMinutes, activeIndex, colorCount);
@@ -239,6 +260,7 @@ String buildStatusJson() {
             i, colors[i].name, colors[i].r, colors[i].g, colors[i].b, colors[i].freq);
     }
     snprintf(buf + pos, sizeof(buf) - pos, "]}");
+    UNLOCK_STATE();
     return String(buf);
 }
 
@@ -257,23 +279,35 @@ void handleWsMessage(AsyncWebSocketClient* client, const String& msg) {
     if (msg.startsWith("SET:")) {
         int idx, r, g, b, freq;
         if (sscanf(msg.c_str(), "SET:%d:%d:%d:%d:%d", &idx, &r, &g, &b, &freq) == 5) {
+          if (LOCK_STATE() == pdTRUE) {
             if (idx >= 0 && idx < colorCount) {
                 colors[idx].r    = (uint8_t)constrain(r,    0, 255);
                 colors[idx].g    = (uint8_t)constrain(g,    0, 255);
                 colors[idx].b    = (uint8_t)constrain(b,    0, 255);
                 colors[idx].freq = (uint16_t)constrain(freq, 1, 40000);
                 activeIndex = idx;
-                applyPWM(colors[idx].r, colors[idx].g, colors[idx].b, colors[idx].freq);
-                if (client) client->text(buildStatusJson());
+                uint8_t cr = colors[idx].r, cg = colors[idx].g, cb = colors[idx].b;
+                uint16_t cf = colors[idx].freq;
+                UNLOCK_STATE();
+                applyPWM(cr, cg, cb, cf);
+            } else {
+              UNLOCK_STATE();
+            }
+          }
+          if (client)
+            client->text(buildStatusJson());
             }
         }
-    }
+    //}
     else if (msg.startsWith("NAME:")) {
         int idx; char name[32];
         if (sscanf(msg.c_str(), "NAME:%d:%31[^\n]", &idx, name) == 2) {
+          if (LOCK_STATE() == pdTRUE) {
             if (idx >= 0 && idx < colorCount) {
                 strncpy(colors[idx].name, name, sizeof(colors[idx].name));
             }
+            UNLOCK_STATE();
+          }
         }
     }
     else if (msg.startsWith("SLEEP:")) {
@@ -450,7 +484,7 @@ void stopWifiAndRestart() {
     ESP_LOGI(TAGMAIN, "WiFi leállítás, újraindítás...");
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
-    delay(200);
+    vTaskDelay(200);
     ESP.restart();
 }
 
@@ -477,6 +511,11 @@ void setup() {
     ledcAttachPin(PIN_G, 1);
     ledcAttachPin(PIN_B, 2);
 
+    lastJumperState = digitalRead(PIN_WIFIEN);
+
+    g_stateMutex = xSemaphoreCreateMutex();
+    configASSERT(g_stateMutex);
+
     // ── Flash adatok betöltése ─────────────────
     loadFromPreferences();
     ESP_LOGI(TAGMAIN, "%d szin betoltve, aktiv: %d, alvasi ido: %d perc",
@@ -485,7 +524,7 @@ void setup() {
     // ── Ébresztési ok vizsgálata ──────────────
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
 
-    if (cause == ESP_SLEEP_WAKEUP_EXT0) {
+    if (cause == ESP_SLEEP_WAKEUP_GPIO) {
         // GPIO ébresztő – ellenőrizzük, hogy legalább 5 mp-ig nyomva marad-e
         ESP_LOGI(TAGMAIN, "Ebreszes gombra. 5 masodpercet varok...");
 
@@ -498,7 +537,7 @@ void setup() {
                 ESP_LOGI(TAGMAIN, "Rovid nyomas, vissza alvásba.");
                 break;
             }
-            delay(50);
+            vTaskDelay(50);
         }
 
         if (digitalRead(NYOMOGOMB) == LOW) {
@@ -507,11 +546,13 @@ void setup() {
         }
 
         if (!longPress) {
-            // PWM csatornák lecsatolása mielőtt alvásba megy
+            //esp_sleep_enable_ext0_wakeup((gpio_num_t)NYOMOGOMB, 0);
+            while (digitalRead(NYOMOGOMB) == LOW)
+              vTaskDelay(pdMS_TO_TICKS(10));
+            vTaskDelay(pdMS_TO_TICKS(50)); // debounce
             ledcDetachPin(PIN_R);
             ledcDetachPin(PIN_G);
             ledcDetachPin(PIN_B);
-            //esp_sleep_enable_ext0_wakeup((gpio_num_t)NYOMOGOMB, 0);
             esp_deep_sleep_enable_gpio_wakeup(1 << NYOMOGOMB, ESP_GPIO_WAKEUP_GPIO_LOW);
             esp_deep_sleep_start();
         }
@@ -538,7 +579,7 @@ void setup() {
 #endif
 #ifndef TESZTWIFI
     if (digitalRead(PIN_WIFIEN) == LOW) {
-        if (cause == ESP_SLEEP_WAKEUP_EXT0 || cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
+        if (cause == ESP_SLEEP_WAKEUP_GPIO || cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
             // Lefutó él volt (gomb) ÉS jumper zárt → WiFi indítás
             startWifi();
         }
@@ -559,19 +600,20 @@ void loop() {
 
     // ── Jumper kiesés figyelés (felfutó él) ───
     // Ha a WiFi fut, de a jumperet kihúzták és nincs OTA folyamat → restart
-    static bool lastJumperState = LOW;
+    //static bool lastJumperState = LOW;
     bool currentJumper = digitalRead(PIN_WIFIEN);
 
-    if (wifiRunning && !otaStarted &&
-        ((millis() - wifiStartMs) > 4UL * 60UL * 1000UL) &&
-        lastJumperState == LOW && currentJumper == HIGH) {
-        // Felfutó él: jumper kihúzva
-        ESP_LOGW(TAGMAIN, "Jumper kihuzva, ujraindulas...");
-        delay(50);  // pergésmentesítés
+    if (wifiRunning && !otaStarted) {
+      bool timeout = (millis() - wifiStartMs) > 4UL * 60UL * 1000UL;
+      bool jumperPull = (lastJumperState == LOW && currentJumper == HIGH);
+      if (timeout || jumperPull) {
+        vTaskDelay(50);
         if (digitalRead(PIN_WIFIEN) == HIGH) {
-            stopWifiAndRestart();
+          stopWifiAndRestart();
         }
+      }
     }
+
     lastJumperState = currentJumper;
 
     // ── Gomb: szín léptető (0.5–1.0 s nyomás) ──
@@ -590,14 +632,27 @@ void loop() {
 
         if (pressDuration >= 500 && pressDuration <= 1000) {
             // 0.5–1.0 s → következő szín
-            activeIndex = (activeIndex + 1) % colorCount;
-            applyPWM(colors[activeIndex].r, colors[activeIndex].g,
-                     colors[activeIndex].b, colors[activeIndex].freq);
-            saveIndexAndTimer();
-            // Időzítő újraindítása
-            activeStartMs = millis();
-            ws.textAll(buildStatusJson());
-            ESP_LOGI(TAGMAIN, "Szin leptetés -> %d (%s)", activeIndex, colors[activeIndex].name);
+            uint8_t  cr, cg, cb;
+            uint16_t cf;
+            if (LOCK_STATE() == pdTRUE) {
+              activeIndex = (activeIndex + 1) % colorCount;
+              cr = colors[activeIndex].r;
+              cg = colors[activeIndex].g;
+              cb = colors[activeIndex].b;
+              cf = colors[activeIndex].freq;
+              UNLOCK_STATE();
+        } else {
+          // Mutex timeout – skip
+          return;
+        }
+
+        applyPWM(cr, cg, cb, cf);
+        saveIndexAndTimer();
+        // Időzítő újraindítása
+        activeStartMs = millis();
+        ws.textAll(buildStatusJson());
+        ESP_LOGI(TAGMAIN, "Szin leptetés -> %d (%s)", activeIndex,
+                 colors[activeIndex].name);
         }
     }
 

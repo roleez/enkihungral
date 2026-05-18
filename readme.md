@@ -85,6 +85,6 @@ Az eszköz az utolsó interakció (indulás, szín léptető gomb, mentés) utá
 
 ## <a name="elso-letoltes"></a>Első letöltés
 
-Legelső firmware letöltésnél USB-C adatkábellel csatlakoztatni kell az ESP32-C3-SuperMini-t PC USB porthoz. Ilyenkor az eszközkezelőben megjelenik két `USB JTAG/serial debug unit` a Portok között. Ekkor BOOT gomb (USB csatlakozó balra az alsó) nyomvatartása alatt az RST gombot (felső gomb) meg kell nyomni, elengedni majd a BOOT-ot is elengedni. Flashelhető állapotba kerül az ESP32. Az eszközkezelőben megnézzük az Interface 0 COM port számát. Ezt használva a letöltésnél az sikeres lesz. Akár Platform.IO, akár direkt esptools-szal működik.
+Legelső firmware letöltésnél USB-C adatkábellel csatlakoztatni kell az ESP32-C3-SuperMini-t PC USB porthoz. Ilyenkor az eszközkezelőben megjelenik két `USB JTAG/serial debug unit` a Portok között. Ekkor BOOT gomb (USB csatlakozó balra, az alsó gomb) nyomvatartása alatt az RST gombot (felső gomb) meg kell nyomni, elengedni majd a BOOT-ot is elengedni. Flashelhető állapotba kerül az ESP32. Az eszközkezelőben megnézzük az Interface 0 COM port számát. Ezt használva a letöltésnél az sikeres lesz. Akár Platform.IO, akár direkt esptools-szal működik.
 
 ![Eszközkezelő (Win10)](devicemanager.PNG)
