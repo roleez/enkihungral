@@ -13,6 +13,7 @@
   - [WebSocket protokoll (belső)](#websocket)
 - [Alvási időzítő](#alvas)
 - [Első letöltés](#elso-letoltes)
+- [Akkumulátor feszültség](#akkufesz)
 
 ## <a name="gombkezeles"></a>Gombkezelés
 
@@ -88,3 +89,6 @@ Az eszköz az utolsó interakció (indulás, szín léptető gomb, mentés) utá
 Legelső firmware letöltésnél USB-C adatkábellel csatlakoztatni kell az ESP32-C3-SuperMini-t PC USB porthoz. Ilyenkor az eszközkezelőben megjelenik két `USB JTAG/serial debug unit` a Portok között. Ekkor BOOT gomb (USB csatlakozó balra, az alsó gomb) nyomvatartása alatt az RST gombot (felső gomb) meg kell nyomni, elengedni majd a BOOT-ot is elengedni. Flashelhető állapotba kerül az ESP32. Az eszközkezelőben megnézzük az Interface 0 COM port számát. Ezt használva a letöltésnél az sikeres lesz. Akár Platform.IO, akár direkt esptools-szal működik.
 
 ![Eszközkezelő (Win10)](devicemanager.PNG)
+
+## <a name="akkufesz"></a>Akkumulátor feszültség
+Ha az akkumulátor feszültsége 3,1 V alá csökkent a készülék mélyalvásba megy az akkumulátor kímélése érdekében.

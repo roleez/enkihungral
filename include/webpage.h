@@ -378,7 +378,7 @@ const char INDEX_HTML[] PROGMEM = R"rawhtml(
 
 <!-- Szín lista -->
 <div class="card">
-  <div class="card-title">Színek (max 25)</div>
+  <div class="card-title">Színek (max 255)</div>
 
   <!-- Fejléc – desktop -->
   <div class="table-header">

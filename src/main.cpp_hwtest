@@ -1,0 +1,236 @@
+// ════════════════════════════════════════════════════════════════
+//  Enki Hungrál – ESP32-C3 SuperMini  |  HW TESZT FIRMWARE
+//
+//  Funkciók:
+//   - WiFi AP: ENKILED (jelszó nélkül), IP: 192.168.99.9
+//   - OTA: http://192.168.99.9/update
+//   - RGB LED: másodpercenként vált R → G → B → R (PWM, duty=200)
+//   - Gomb: nyomva tartva buzzer szól, elengedve elhallgat
+//   - Nincs NVS, nincs WebSocket
+// ════════════════════════════════════════════════════════════════
+
+#include "esp_sleep.h"
+#include <Arduino.h>
+#include <ESPAsyncWebServer.h>
+#include <ElegantOTA.h>
+#include <WiFi.h>
+#include <esp_log.h>
+#include <esp_wifi.h>
+
+// ─────────────────────────────────────────────
+//  Hardver konfiguráció
+// ─────────────────────────────────────────────
+#define AKKUFESZ    A0
+#define PIEZO       1
+#define NYOMOGOMB   3
+#define PIN_R       5
+#define PIN_G       6
+#define PIN_B       7
+#define LED_PIN     8 // GPIO8 – beépített LED (ESP32-C3-SuperMini)
+#define PIN_WIFIEN  10
+
+#define PWM_RES     8       // 8 bit → 0–255
+#define PWM_FREQ    1000    // Hz
+
+//#define ALVAS
+
+// Időzítések (ms)
+#define MUKODESI_IDO    120000 // 2 perc (120 másodperc)
+#define EBREDESI_LIMIT  1000 // 1 másodperc gombnyomás az ébredéshez
+
+const char *TAGMAIN = "ENKI";
+// ─────────────────────────────────────────────
+//  WiFi AP
+// ─────────────────────────────────────────────
+const char*  AP_SSID = "ENKILED";
+IPAddress local_ip(192, 168, 99, 9);
+IPAddress gateway  (192, 168, 99, 9);
+IPAddress subnet   (255, 255, 255, 0);
+
+AsyncWebServer server(80);
+
+float readBatteryVoltage() {
+  int sum = 0;
+  for (int i = 0; i < 8; i++) {
+    sum += analogRead(AKKUFESZ);
+    vTaskDelay(2);
+  }
+  float adc_v = (sum / 8.0f) / 4095.0f * 3.3f;
+  return adc_v * 1.33f;
+}
+
+static void detachAndHoldPWM() {
+  ledcWrite(0, 0);
+  ledcWrite(1, 0);
+  ledcWrite(2, 0);
+  gpio_set_level((gpio_num_t)PIN_R, 0);
+  gpio_set_level((gpio_num_t)PIN_G, 0);
+  gpio_set_level((gpio_num_t)PIN_B, 0);
+  ledcDetachPin(PIN_R);
+  ledcDetachPin(PIN_G);
+  ledcDetachPin(PIN_B);
+  gpio_hold_en((gpio_num_t)PIN_R);
+  gpio_hold_en((gpio_num_t)PIN_G);
+  gpio_hold_en((gpio_num_t)PIN_B);
+}
+
+// ─────────────────────────────────────────────
+//  Mélyalvás funkció
+// ─────────────────────────────────────────────
+void goToDeepSleep() {
+  ESP_LOGI(TAGMAIN, "Mélyalvásba lépés... Ébredés a 3-as gombbal (LOW).");
+
+    {
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_OFF);
+    esp_wifi_stop();
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+
+  // Minden kimenetet lekapcsolunk alvás előtt
+  ledcWrite(0, 0);
+  ledcWrite(1, 0);
+  ledcWrite(2, 0);
+  digitalWrite(LED_PIN, LOW);
+  digitalWrite(PIEZO, LOW);
+
+  // Buzzer GPIO hold (LOW állapotból indulunk)
+  gpio_hold_en((gpio_num_t)PIEZO);
+
+  // FIX E4: PIN_WIFIEN pull-up kikapcsolása
+  // GPIO10 nem RTC GPIO, a belső pull-up sleep alatt nem aktív,
+  // de explicit kikapcsolás megelőzi a bizonytalan állapotot
+  gpio_pullup_dis((gpio_num_t)PIN_WIFIEN);
+  gpio_pulldown_dis((gpio_num_t)PIN_WIFIEN);
+
+  // GPIO3 (nyomógomb) beállítása ébresztőnek
+  // Az ESP32-C3-on az esp_deep_sleep_enable_gpio_wakeup függvényt használjuk
+  esp_deep_sleep_enable_gpio_wakeup(1ULL << NYOMOGOMB,
+                                    ESP_GPIO_WAKEUP_GPIO_LOW);
+
+  Serial.flush();
+  esp_deep_sleep_start();
+}
+// ─────────────────────────────────────────────
+//  Setup
+// ─────────────────────────────────────────────
+void setup() {
+    Serial.begin(115200);
+    ESP_LOGI(TAGMAIN, "=== ENKI HW TESZT ===");
+
+    // ── GPIO ──────────────────────────────────
+    pinMode(NYOMOGOMB, INPUT_PULLUP);
+
+#ifdef ALVAS
+    // --- Ébredés ellenőrzése ---
+    esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+    if (wakeup_reason == ESP_SLEEP_WAKEUP_GPIO) {
+      ESP_LOGI(TAGMAIN, "Ébredés gombnyomásra. Ellenőrzés (>1s)...");
+
+      unsigned long startWait = millis();
+      bool heldLongEnough = true;
+
+      while (digitalRead(NYOMOGOMB) == LOW) { // Amíg nyomják
+        if (millis() - startWait > EBREDESI_LIMIT) {
+          ESP_LOGI(TAGMAIN, "Gombnyomás elfogadva, indul a rendszer.");
+          heldLongEnough = true;
+          break;
+        }
+        delay(10);
+        heldLongEnough = false;
+      }
+
+      if (!heldLongEnough) {
+        ESP_LOGI(TAGMAIN, "Túl rövid nyomás, visszaalvás.");
+        goToDeepSleep();
+      }
+    } else {
+      ESP_LOGI(TAGMAIN, "=== ENKI HW TESZT (Hidegindítás) ===");
+    }
+#endif
+
+    pinMode(PIN_WIFIEN, INPUT_PULLUP);
+    pinMode(PIEZO,     OUTPUT);
+    pinMode(LED_PIN,   OUTPUT);
+
+    pinMode(PIN_R, OUTPUT);
+    pinMode(PIN_G, OUTPUT);
+    pinMode(PIN_B, OUTPUT);
+    digitalWrite(PIEZO, LOW);
+
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db);
+
+    // ── PWM csatornák ─────────────────────────
+    /*ledcSetup(0, PWM_FREQ, PWM_RES);
+    ledcSetup(1, PWM_FREQ, PWM_RES);
+    ledcSetup(2, PWM_FREQ, PWM_RES);
+    ledcAttachPin(PIN_R, 0);
+    ledcAttachPin(PIN_G, 1);
+    ledcAttachPin(PIN_B, 2);
+    ledcWrite(0, 0);
+    ledcWrite(1, 0);
+    ledcWrite(2, 0);*/
+
+    // ── WiFi AP ───────────────────────────────
+    WiFi.softAPConfig(local_ip, gateway, subnet);
+    WiFi.softAP(AP_SSID, nullptr);
+    esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20);
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
+    ESP_LOGI(TAGMAIN, "WiFi AP elindult. SSID: %s, IP: %s", AP_SSID, WiFi.softAPIP().toString().c_str());
+
+    // ── OTA ───────────────────────────────────
+    ElegantOTA.begin(&server);
+    server.begin();
+
+    ESP_LOGI(TAGMAIN, "OTA szerver elindult. OTA: http://192.168.99.9/update");
+}
+// ─────────────────────────────────────────────
+//  Loop
+// ─────────────────────────────────────────────
+void loop() {
+    ElegantOTA.loop();
+
+#ifdef ALVAS
+    // --- Automatikus alvás 2 perc után ---
+    if (millis() > MUKODESI_IDO) {
+      ESP_LOGI(TAGMAIN, "2 perc letelt. Alvas...");
+      goToDeepSleep();
+    }
+#endif
+
+    // ── RGB léptető: másodpercenként R→G→B→R ──
+    static uint8_t  colorStep    = 0;   // 0=R, 1=G, 2=B
+    static uint32_t lastStepMs   = 0;
+    static bool     led          = false; // beépített LED állapota
+
+    if (millis() - lastStepMs >= 1000) {
+        lastStepMs = millis();
+
+        /*ledcWrite(0, colorStep == 0 ? 200 : 0);
+        ledcWrite(1, colorStep == 1 ? 200 : 0);
+        ledcWrite(2, colorStep == 2 ? 200 : 0);*/
+
+        digitalWrite(PIN_R, colorStep == 0 ? HIGH : LOW);
+        digitalWrite(PIN_G, colorStep == 1 ? HIGH : LOW);
+        digitalWrite(PIN_B, colorStep == 2 ? HIGH : LOW);
+
+        ESP_LOGI(TAGMAIN, "LED: %s", colorStep == 0 ? "PIROS" :
+                                   colorStep == 1 ? "ZOLD"  : "KEK");
+
+        colorStep = (colorStep + 1) % 3;
+        led = !led; // beépített LED váltása (GPIO8)
+        digitalWrite(LED_PIN, led ? HIGH : LOW);
+        
+        bool wifiEnabled = digitalRead(PIN_WIFIEN);
+        ESP_LOGI(TAGMAIN, "WiFi: %s", wifiEnabled ? "ENABLED" : "DISABLED");
+
+        float adcfesz = readBatteryVoltage();
+        ESP_LOGI(TAGMAIN, "Akkufeszültség: %.2f V", adcfesz);
+    }
+
+    // ── Gomb → buzzer ─────────────────────────
+    digitalWrite(PIEZO, digitalRead(NYOMOGOMB) == LOW ? HIGH : LOW);
+    vTaskDelay(10);
+}
