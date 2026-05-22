@@ -35,6 +35,7 @@
 //  A define engedélyezéséhez távolítsd el a komment jelet:
 // ─────────────────────────────────────────────────────────────────
 #define USE_ALWAYS_RUNNING_MODE
+#define WIFI_LED_VILLOGAS
 #define URESC3
 // ════════════════════════════════════════════════════════════════
 
@@ -77,6 +78,7 @@
 
 // Gomb debounce idő (ms)
 #define BTN_DEBOUNCE_MS  30
+#define BTN_EBRED        5000
 
 // TESZTWIFI: Kommenteld be fejlesztéshez (WiFi mindig indul)
 // Csak az OLD MODE-ban van hatása; az új módban a PIN_WIFIEN boot-kori
@@ -125,6 +127,7 @@ ColorEntry colors[MAX_COLORS];
 int        colorCount  = 0;
 int        activeIndex = 0;     // Aktív szín indexe
 bool lastJumperState;
+bool voltFeszHiba = false;  // Akkufeszültség hiba állapotának követése
 
 // Mutex: védi a colors[], colorCount, activeIndex, sleepMinutes
 // változókat a loop task és az async_tcp (WS/HTTP) task között.
@@ -793,6 +796,19 @@ void setup() {
     ESP_LOGI(TAGMAIN, "%d szin betoltve, aktiv: %d, alvasi ido: %d perc",
              colorCount, activeIndex, sleepMinutes);
 
+#ifdef URESC3
+    bool isC3 = HIGH;
+#else
+    bool isC3 = LOW;
+#endif
+    if (digitalRead(PIN_WIFIEN) == isC3) {
+      ESP_LOGI(TAGMAIN, "[ARM] PIN_WIFIEN LOW -> WiFi AP indul.");
+      startWifi();
+      wifiRunning = true;
+    } else {
+      ESP_LOGI(TAGMAIN, "[ARM] PIN_WIFIEN HIGH -> WiFi nem indul.");
+    }
+
 // ════════════════════════════════════════════════════════════════
 //  [OLD MODE] – Deep-sleep alapú setup logika
 // ════════════════════════════════════════════════════════════════
@@ -891,9 +907,12 @@ void setup() {
 
     // ── Aktív szín beállítása PWM-re ──────────
     // Induláskor az utolsó aktív szín azonnal bekapcsol.
-    applyPWM(colors[activeIndex].r, colors[activeIndex].g,
+    applyPWM(0, 0, 0, 1000); 
+    g_ledsOn = false;
+
+/*    applyPWM(colors[activeIndex].r, colors[activeIndex].g,
              colors[activeIndex].b, colors[activeIndex].freq);
-    g_ledsOn = true;
+    g_ledsOn = true;*/
 
     // ── Alvási időzítő indítása ───────────────
     activeStartMs = millis();
@@ -901,23 +920,16 @@ void setup() {
     // ── WiFi döntés (CSAK boot-kor, jumper alapján, fix) ─────────
     // A boot utáni PIN_WIFIEN állapot dönt. Később a jumper állapotát
     // NEM figyeljük, NEM indítjuk újra a WiFit, NEM állítjuk le.
-#ifdef URESC3
-    bool isC3 = HIGH;
-#else
-    bool isC3 = LOW;
-#endif
-    if (digitalRead(PIN_WIFIEN) == isC3) {
-        ESP_LOGI(TAGMAIN, "[ARM] PIN_WIFIEN LOW -> WiFi AP indul.");
-        startWifi();
-    } else {
-        ESP_LOGI(TAGMAIN, "[ARM] PIN_WIFIEN HIGH -> WiFi nem indul.");
-    }
+#endif // USE_ALWAYS_RUNNING_MODE
 
+#ifdef WIFI_LED_VILLOGAS
     // ── FreeRTOS Blink Task indítása ──────────
     // Stack mérete: 1024 szó (4096 byte) elegendő egy egyszerű blink taskhoz.
     // Prioritás: 1 (minimális, hogy ne konkuráljon a loop taskkal).
     // Core: 0-ra pinelve (ESP32-C3-on csak 1 core van, ezért itt nem kritikus,
     //       de xTaskCreatePinnedToCore tskNO_AFFINITY is megfelelő).
+    if (wifiRunning) {
+        ESP_LOGI(TAGMAIN, "[ARM] Blink task inditasa...");
     BaseType_t blinkResult = xTaskCreatePinnedToCore(
         blinkTask,              // Task függvény
         "blinkTask",            // Debug név
@@ -933,8 +945,11 @@ void setup() {
     } else {
         ESP_LOGI(TAGMAIN, "[ARM] Blink task elindult.");
     }
+    } else {
+        ESP_LOGI(TAGMAIN, "[ARM] WiFi nem indul, blink task nem inditva.");
+    }
+#endif // WIFI_LED_VILLOGAS
 
-#endif // USE_ALWAYS_RUNNING_MODE
 }
 
 // ─────────────────────────────────────────────
@@ -960,31 +975,6 @@ void loop() {
 //  [OLD MODE] Loop – Jumper figyelés, akkú timeout → deep sleep
 // ════════════════════════════════════════════════════════════════
 #ifndef USE_ALWAYS_RUNNING_MODE
-
-    // ── Jumper kiesés figyelés ─────────────────
-    // FIX C2: Javított precedencia (eredeti: helytelen || / && keverés)
-#ifndef TESZTWIFI
-    bool currentJumper = digitalRead(PIN_WIFIEN);
-    if (wifiRunning && !otaStarted) {
-        bool timeout   = (millis() - wifiStartMs) > 4UL * 60UL * 1000UL;
-        bool jumperPull = (lastJumperState == LOW && currentJumper == HIGH);
-        if (timeout || jumperPull) {
-            ESP_LOGW(TAGMAIN, "Jumper kihuzva vagy timeout, ujraindulas...");
-            vTaskDelay(50);
-            if (digitalRead(PIN_WIFIEN) == HIGH) {
-                stopWifiAndRestart();
-            }
-        }
-    }
-    lastJumperState = currentJumper;
-#else // TESZTWIFI
-    if (wifiRunning && !otaStarted) {
-        if ((millis() - wifiStartMs) > 4UL * 60UL * 1000UL) {
-            ESP_LOGW(TAGMAIN, "TESZTWIFI timeout -> deep sleep.");
-            goToDeepSleep();
-        }
-    }
-#endif // TESZTWIFI
 
     // ── Akkufeszültség mérés (percenként) ─────
     // FIX R2: ADC csak loop taskból; alacsony akku esetén kényszeres sleep
@@ -1070,6 +1060,7 @@ void loop() {
     // ── Akkufeszültség mérés (percenként) ─────
     // Alacsony akku esetén is csak LED kikapcsolás, az MCU fut tovább.
     // Ha a feszültség extrém alacsony (brownout közel), a hardver is véd.
+    static uint32_t lastBattPushMs = 0;
     if (millis() - g_battLastReadMs > 60000) {
         g_battVoltage = readBatteryVoltage();
         g_battLastReadMs = millis();
@@ -1082,80 +1073,101 @@ void loop() {
                 buzzerErrorAsync();
                 applyPWM(0, 0, 0, 1000);
                 g_ledsOn = false;
+                voltFeszHiba = true;
                 ws.textAll(buildStatusJson());
             }
         }
     }
 
-    // ── Gomb: szín léptető [NEW ALWAYS RUNNING MODE] ─────────────
-    // Logika:
-    //  - Ha LED-ek ki vannak (g_ledsOn == false):
-    //    → gombnyomásra bekapcsol az aktuális szín, timeout újraindul.
-    //  - Ha LED-ek be vannak (g_ledsOn == true):
-    //    → a következő színre lép, timeout újraindul.
-    //
-    // Nyomáshossz: 0.5–1.0 s (kompatibilis az OLD MODE-dal)
-    // FIX R4: Szoftveres debounce megtartva
-    // FIX C4: mutex megtartva
-    {
-        static bool lastRawBtn    = HIGH;
-        static bool debouncedBtn  = HIGH;
-        static uint32_t lastDebounceMs = 0;
-        static uint32_t btnPressMs     = 0;
-        static bool btnWasPressed = false;
-
-        bool rawBtn = (digitalRead(NYOMOGOMB) == LOW);
-        if (rawBtn != lastRawBtn) {
-            lastDebounceMs = millis();
-            lastRawBtn = rawBtn;
-        }
-        if ((millis() - lastDebounceMs) > BTN_DEBOUNCE_MS) {
-            debouncedBtn = rawBtn;
-        }
-
-        bool btnDown = debouncedBtn;
-
-        if (btnDown && !btnWasPressed) {
-            btnPressMs    = millis();
-            btnWasPressed = true;
-        }
-
-        if (!btnDown && btnWasPressed) {
-            uint32_t pressDuration = millis() - btnPressMs;
-            btnWasPressed = false;
-
-            if (pressDuration >= 500 && pressDuration <= 1000) {
-                uint8_t  cr, cg, cb;
-                uint16_t cf;
-
-                if (LOCK_STATE() == pdTRUE) {
-                    if (g_ledsOn) {
-                        // LED-ek be vannak → következő szín
-                        activeIndex = (activeIndex + 1) % colorCount;
-                        ESP_LOGI(TAGMAIN, "[ARM] Szin leptes -> %d", activeIndex);
-                    } else {
-                        // LED-ek ki vannak → aktuális szín bekapcsol (index nem változik)
-                        ESP_LOGI(TAGMAIN, "[ARM] LED bekapcsolas, szin: %d", activeIndex);
-                    }
-                    cr = colors[activeIndex].r;
-                    cg = colors[activeIndex].g;
-                    cb = colors[activeIndex].b;
-                    cf = colors[activeIndex].freq;
-                    UNLOCK_STATE();
-
-                    applyPWM(cr, cg, cb, cf);   // mutex-en kívül
-                    g_ledsOn = true;
-                    activeStartMs = millis();    // timeout újraindítása
-                    saveIndexAndTimer();         // NVS: index + timer mentés
-                    ws.textAll(buildStatusJson());
-                } else {
-                    // Mutex timeout – állapot nem változik, ignoráljuk
-                    UNLOCK_STATE();
-                }
-            }
-        }
+    if (wifiRunning && (millis() - lastBattPushMs > 5000)) {
+      lastBattPushMs = millis();
+      g_battVoltage = readBatteryVoltage(); // ← friss mérés push előtt
+      ws.textAll(buildStatusJson());
     }
 
+    // ── Gomb: LED be/szín váltó [NEW ALWAYS RUNNING MODE] ───────────
+    // Ha g_ledsOn == false:
+    //   → min. 5 mp folyamatos nyomás → LED be, aktuális szín, timeout indul
+    //   → rövidebb nyomás → ignorálva
+    // Ha g_ledsOn == true:
+    //   → 0.5–1.0 s nyomás elengedéskor → következő szín, timeout reset, NVS
+    //   mentés
+    {
+      static bool lastRaw = HIGH;
+      static uint32_t lastDebounceMs = 0;
+      static bool debouncedBtn = HIGH;
+      static bool btnWasPressed = false;
+      static uint32_t btnPressMs = 0;
+      static bool longPressArmed = false; // 5 mp-es nyomás már kiváltott-e
+
+      // --- Debounce ---
+      bool rawBtn = (digitalRead(NYOMOGOMB) == LOW);
+      if (rawBtn != lastRaw) {
+        lastDebounceMs = millis();
+        lastRaw = rawBtn;
+      }
+      bool stableBtn = ((millis() - lastDebounceMs) >= BTN_DEBOUNCE_MS)
+                           ? rawBtn
+                           : debouncedBtn;
+      debouncedBtn = stableBtn;
+
+      // --- Lenyomás észlelése ---
+      if (stableBtn && !btnWasPressed) {
+        btnWasPressed = true;
+        btnPressMs = millis();
+        longPressArmed = false;
+      }
+
+      // --- Nyomva tartás közbeni 5 mp-es kiváltás (LED ki állapotban) ---
+      if (stableBtn && btnWasPressed && !g_ledsOn && !longPressArmed) {
+        if ((millis() - btnPressMs) >= 5000) {
+          longPressArmed = true;
+          uint8_t cr, cg, cb;
+          uint16_t cf;
+          if (LOCK_STATE() == pdTRUE) {
+            cr = colors[activeIndex].r;
+            cg = colors[activeIndex].g;
+            cb = colors[activeIndex].b;
+            cf = colors[activeIndex].freq;
+            UNLOCK_STATE();
+          }
+          applyPWM(cr, cg, cb, cf);
+          g_ledsOn = true;
+          activeStartMs = millis();
+          ws.textAll(buildStatusJson());
+          ESP_LOGI(TAGMAIN, "[ARM] 5mp nyomas -> LED be, szin: %d",
+                   activeIndex);
+        }
+      }
+
+      // --- Elengedés ---
+      if (!stableBtn && btnWasPressed) {
+        uint32_t pressDuration = millis() - btnPressMs;
+        btnWasPressed = false;
+        longPressArmed = false;
+
+        // Szín léptetés: csak LED be állapotban, 0.5–1.0 s nyomás
+        if (g_ledsOn && pressDuration >= 500 && pressDuration <= 1000) {
+          uint8_t cr, cg, cb;
+          uint16_t cf;
+          if (LOCK_STATE() == pdTRUE) {
+            //activeIndex = (activeIndex + 1) % colorCount;
+            activeIndex++;
+            if (activeIndex >= colorCount) activeIndex = 0;
+            cr = colors[activeIndex].r;
+            cg = colors[activeIndex].g;
+            cb = colors[activeIndex].b;
+            cf = colors[activeIndex].freq;
+            UNLOCK_STATE();
+          }
+          applyPWM(cr, cg, cb, cf);
+          activeStartMs = millis();
+          saveIndexAndTimer();
+          ws.textAll(buildStatusJson());
+          ESP_LOGI(TAGMAIN, "[ARM] Szin leptes -> %d", activeIndex);
+        }
+      }
+    }
     // ── LED timeout [NEW ALWAYS RUNNING MODE] → CSAK LED kikapcsolás ─────
     // Az MCU, WiFi, WebSocket, OTA mind fut tovább!
     // Gombnyomásra újra bekapcsol (nem ébresztés, normál esemény).

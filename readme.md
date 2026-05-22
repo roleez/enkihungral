@@ -14,6 +14,7 @@
 - [Alvási időzítő](#alvas)
 - [Első letöltés](#elso-letoltes)
 - [Akkumulátor feszültség](#akkufesz)
+- [Hangjelzések](#hangjel)
 
 ## <a name="gombkezeles"></a>Gombkezelés
 
@@ -45,11 +46,11 @@ A `PIN_WIFIEN` (GPIO10) jumper az ESP32-C3 WiFi Access Point (AP) módjának kez
 - **Captive portal:** minden DNS kérés az AP IP-re irányítódik
 
 ### <a name="wifibe"></a>WiFi engedélyezése
-- A jumper legyen zárt (`LOW`) **és** az eszköz mélyálomból, gombnyomással ébredjen fel.
-- Ekkor az AP elindul és elérhető a weblap.
+- A jumper legyen zárt (`LOW`) **és** az eszköz mélyálomból, gombnyomással ébredjen fel. Tápmegszakítással is lehet.
+- Ekkor az AP elindul és elérhető a weblap. WiFi bekapcsolt állásban a beépített LED (kék) villog.
 
 ### <a name="wifiki"></a>WiFi letiltása / leállítás
-- Ha a jumpert kihúzzák (felfutó él) és az AP legalább 4 perce fut (és nincs folyamatban OTA frissítés), az eszköz automatikusan újraindul WiFi nélkül.
+- Jumper eltávolításával majd tápmegszakítással.
 
 ---
 
@@ -81,7 +82,7 @@ A weblap WebSocket kapcsolaton keresztül kommunikál az eszközzel, valós idej
 
 Az eszköz az utolsó interakció (indulás, szín léptető gomb, mentés) után `sleepMinutes` perccel automatikusan mélyálomba (deep sleep) lép:
 1. LED-ek kikapcsolnak.
-2. Buzzer 2 másodpercig szól.
+2. Buzzer 3 hosszabb csippanással szól.
 3. Az eszköz deep sleep módba lép, GPIO3 (nyomógomb) lefutó élre ébred.
 
 ## <a name="elso-letoltes"></a>Első letöltés
@@ -92,3 +93,8 @@ Legelső firmware letöltésnél USB-C adatkábellel csatlakoztatni kell az ESP3
 
 ## <a name="akkufesz"></a>Akkumulátor feszültség
 Ha az akkumulátor feszültsége 3,1 V alá csökkent a készülék mélyalvásba megy az akkumulátor kímélése érdekében.
+
+## <a name="hangjel"></a>Hangjelzések
+- Bekapcsoláskor (hosszú gombnyomás) 3 rövid sípolás hallatszik.
+- Fény bekapcsolási idő lejárt 3 hosszú sípolás hallatszik.
+- Akkumulátor merül egy hosszú sípolás (5 mp) hallatszik, percenként ismétlődve. Bekapcsolt módban.
