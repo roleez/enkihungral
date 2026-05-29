@@ -58,6 +58,19 @@ A `PIN_WIFIEN` (GPIO10) jumper az ESP32-C3 WiFi Access Point (AP) módjának kez
 
 A weblap WebSocket kapcsolaton keresztül kommunikál az eszközzel, valós idejű frissítéssel.
 
+A weblapon látható az akkumulátor feszültsége, töltöttségi állapota.
+
+A LED-eken megjelenített színek értékei beállíthatóak az "R", "G", "B" mezők mellett.
+Az értékek a 0...255 lehetnek, a meghajtó PWM jel kitöltési tényezője. 0 -> 0%, 255 -> 100%.
+
+A PWM frekcenciáját is be lehet színenként állítani.
+- -: szín törlés
+- +: szín hozzáadás
+
+Maximum 25 színt lehet hozzáadni.
+
+![Színkezelő (Win10)](enkiledcsakracolsetup.png)
+
 ### <a name="avalfunc"></a>Elérhető funkciók
 
 | Funkció | Leírás |

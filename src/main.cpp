@@ -1,3 +1,4 @@
+// HR. 2026.Q2.
 // ════════════════════════════════════════════════════════════════
 //  Enki Hungrál – ESP32-C3 SuperMini
 //  RGB LED vezérlő deep-sleep alapú működéssel, WiFi AP + OTA
@@ -36,7 +37,7 @@
 // ─────────────────────────────────────────────────────────────────
 //#define USE_ALWAYS_RUNNING_MODE
 #define WIFI_LED_VILLOGAS
-#define URESC3
+//#define URESC3
 // ════════════════════════════════════════════════════════════════
 
 #include <Arduino.h>
@@ -79,7 +80,7 @@
 
 // Gomb debounce idő (ms)
 #define BTN_DEBOUNCE_MS  30
-#define BTN_EBRED        3500
+#define BTN_EBRED        1500
 
 #define DEFAULT_COLORS_COUNT 7
 
@@ -113,7 +114,7 @@ struct BuzzerParams {
 };
 
 // ─────────────────────────────────────────────
-//  Alapértelmezett 3 szín (ha még nincs flash adat)
+//  Alapértelmezett 7 szín (ha még nincs flash adat)
 //  Megjegyzés: PROGMEM ESP32-C3-on NOP (egységes memóriabusz),
 //  eltávolítva a félreértések elkerüléséért.
 // ─────────────────────────────────────────────
@@ -138,6 +139,7 @@ bool voltFeszHiba = false;  // Akkufeszültség hiba állapotának követése
 bool pendingWsUpdate = false;   // Jelzi, hogy küldeni kell a státuszt a klienseknek
 bool pendingNvsSave   = false;   // Jelzi, hogy menteni kell az indexet a Flash-be
 uint32_t lastChangeMs = 0;       // Késleltetett mentéshez
+bool g_skipBtnUntilRelease = false;
 
 // Mutex: védi a colors[], colorCount, activeIndex, sleepMinutes
 // változókat a loop task és az async_tcp (WS/HTTP) task között.
@@ -201,7 +203,7 @@ float readBatteryVoltage() {
         vTaskDelay(2);
     }
     float adc_v = (sum / 8.0f) / 4095.0f * 3.3f;
-    return adc_v * 1.33f;
+    return adc_v * 1.4103f;
 }
 
 // ─────────────────────────────────────────────
@@ -346,7 +348,7 @@ void goToDeepSleep() {
 
     // LED ki, buzzer, majd GPIO hold
     applyPWM(0, 0, 0, 1000);
-    buzzerBeep(3000);
+    //buzzerBeep(3000);
     detachAndHoldPWM();
 
     // Buzzer GPIO hold (LOW állapotból indulunk)
@@ -851,6 +853,11 @@ void setup() {
 
   // Ha ide eljut, akkor megvolt az 5 mp nyomás!
   ESP_LOGI(TAGMAIN, "Sikeres ébredés, rendszer indul.");
+
+  g_skipBtnUntilRelease = true;
+
+  vTaskDelay(pdMS_TO_TICKS(BTN_DEBOUNCE_MS)); // debounce
+
   buzzerBeepAsync(500); // Visszajelzés a sikeres bekapcsolásról
   g_ledsOn = true; // Az új módban ez a flag vezérli a timeout logikát
 
@@ -961,11 +968,15 @@ void loop() {
             ESP_LOGW(TAGMAIN, "[ARM] Alacsony akku (%.2f V), LED-ek lekapcsolva.",
                      g_battVoltage);
             if (g_ledsOn) {
-                buzzerErrorAsync();
+                /*buzzerErrorAsync();
                 applyPWM(0, 0, 0, 1000);
                 g_ledsOn = false;
                 voltFeszHiba = true;
-                ws.textAll(buildStatusJson());
+                ws.textAll(buildStatusJson());*/
+                buzzerError(4000);
+#ifndef USE_ALWAYS_RUNNING_MODE
+                goToDeepSleep();
+#endif
             }
         }
     }
@@ -976,46 +987,61 @@ void loop() {
       ws.textAll(buildStatusJson());
     }
 
-    // ── Gomb: LED be/szín váltó [NEW ALWAYS RUNNING MODE] ───────────
-    // Ha g_ledsOn == false:
-    //   → min. 5 mp folyamatos nyomás → LED be, aktuális szín, timeout indul
-    //   → rövidebb nyomás → ignorálva
-    // Ha g_ledsOn == true:
-    //   → 0.5–1.0 s nyomás elengedéskor → következő szín, timeout reset, NVS
-    //   mentés
+    // ── Gomb: felfutó élre színváltás / 5mp tartva → azonnal deep sleep ──
     {
       static bool lastRaw = HIGH;
       static uint32_t lastDebounceMs = 0;
       static bool debouncedBtn = HIGH;
       static bool btnWasPressed = false;
       static uint32_t btnPressMs = 0;
-      static bool longPressArmed = false; // 5 mp-es nyomás már kiváltott-e
 
-      // --- Debounce ---
-      bool rawBtn = (digitalRead(NYOMOGOMB) == LOW);
-      if (rawBtn != lastRaw) {
-        lastDebounceMs = millis();
-        lastRaw = rawBtn;
+      if (g_skipBtnUntilRelease) {
+        // Ébresztési gombnyomás "lenyelése" – várjuk az elengedést
+        if (digitalRead(NYOMOGOMB) == HIGH) {
+          g_skipBtnUntilRelease = false;
+          lastRaw = HIGH;
+          debouncedBtn = HIGH;
+          btnWasPressed = false;
+        }
+      } else {
+        bool rawBtn = (digitalRead(NYOMOGOMB) == LOW);
+        if (rawBtn != lastRaw) {
+          lastDebounceMs = millis();
+          lastRaw = rawBtn;
+        }
+        bool stableBtn = ((millis() - lastDebounceMs) >= BTN_DEBOUNCE_MS)
+                             ? rawBtn
+                             : debouncedBtn;
+        debouncedBtn = stableBtn;
+
+        // Lenyomás észlelése
+        if (stableBtn && !btnWasPressed) {
+          btnWasPressed = true;
+          btnPressMs = millis();
+        }
+
+        // ── 5mp tartva → AZONNAL deep sleep, nem kell elengedni ───────
+        if (btnWasPressed && stableBtn && (millis() - btnPressMs >= 3000)) {
+          ESP_LOGI(TAGMAIN, "[BTN] 5mp+ tartva -> azonnal deep sleep");
+#ifndef USE_ALWAYS_RUNNING_MODE
+          buzzerError(500);
+          goToDeepSleep();
+#endif
       }
-      bool stableBtn = ((millis() - lastDebounceMs) >= BTN_DEBOUNCE_MS)
-                           ? rawBtn
-                           : debouncedBtn;
-      debouncedBtn = stableBtn;
 
-      // --- Lenyomás észlelése ---
-      if (stableBtn && !btnWasPressed) {
-        btnWasPressed = true;
-        btnPressMs = millis();
-        longPressArmed = false;
-      }
+      // Elengedés
+      if (!stableBtn && btnWasPressed) {
+        uint32_t dur = millis() - btnPressMs;
+        btnWasPressed = false;
 
-      // --- Nyomva tartás közbeni 5 mp-es kiváltás (LED ki állapotban) ---
-      if (stableBtn && btnWasPressed && !g_ledsOn && !longPressArmed) {
-        if ((millis() - btnPressMs) >= 5000) {
-          longPressArmed = true;
+        if (dur <= 1000) {
+          // ── max 1 mp → színváltás ────────────────────────────────
           uint8_t cr, cg, cb;
           uint16_t cf;
           if (LOCK_STATE() == pdTRUE) {
+            activeIndex++;
+            if (activeIndex >= colorCount)
+              activeIndex = 0;
             cr = colors[activeIndex].r;
             cg = colors[activeIndex].g;
             cb = colors[activeIndex].b;
@@ -1025,45 +1051,17 @@ void loop() {
           applyPWM(cr, cg, cb, cf);
           g_ledsOn = true;
           activeStartMs = millis();
-          ws.textAll(buildStatusJson());
-          ESP_LOGI(TAGMAIN, "[ARM] 5mp nyomas -> LED be, szin: %d",
-                   activeIndex);
-        }
-      }
-
-      // --- Elengedés ---
-      if (!stableBtn && btnWasPressed) {
-        uint32_t pressDuration = millis() - btnPressMs;
-        btnWasPressed = false;
-        longPressArmed = false;
-
-        // Szín léptetés: csak LED be állapotban, 0.5–1.0 s nyomás
-        if (g_ledsOn && pressDuration >= 400 && pressDuration <= 1200) {
-          uint8_t cr, cg, cb;
-          uint16_t cf;
-          if (LOCK_STATE() == pdTRUE) {
-            //activeIndex = (activeIndex + 1) % colorCount;
-            activeIndex++;
-            if (activeIndex >= colorCount) activeIndex = 0;
-            cr = colors[activeIndex].r;
-            cg = colors[activeIndex].g;
-            cb = colors[activeIndex].b;
-            cf = colors[activeIndex].freq;
-            UNLOCK_STATE();
-          }
-          applyPWM(cr, cg, cb, cf);
-          activeStartMs = millis();
-          //saveIndexAndTimer();
-          //ws.textAll(buildStatusJson());
-          // Csak jelzünk, nem csinálunk nehéz műveletet!
           pendingWsUpdate = true;
           pendingNvsSave = true;
           lastChangeMs = millis();
-          ESP_LOGI(TAGMAIN, "[ARM] Szin leptes -> %d", activeIndex);
+          ESP_LOGI(TAGMAIN, "[BTN] Szin leptes -> %d (dur=%lums)", activeIndex,
+                   dur);
         }
+        // 1–5 mp közötti nyomás: ignorálva
+       }
       }
     }
-    // ── LED timeout [NEW ALWAYS RUNNING MODE] → CSAK LED kikapcsolás ─────
+
     // Az MCU, WiFi, WebSocket, OTA mind fut tovább!
     // Gombnyomásra újra bekapcsol (nem ébresztés, normál esemény).
     if (g_ledsOn) {
@@ -1082,6 +1080,7 @@ void loop() {
 #else
           // Deep Sleep mód: teljes kikapcsolás
           ESP_LOGI(TAGMAIN, "Timeout (%d perc) -> Mélyalvás.", sleepMinutes);
+          buzzerBeep(3000);
           goToDeepSleep();
 #endif
         }
