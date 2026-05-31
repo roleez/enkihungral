@@ -55,6 +55,7 @@
 #include <freertos/semphr.h>
 #include "webpage.h"
 #include "gamma10.h"
+#include "RgbFader.h"
 
 // ─────────────────────────────────────────────
 //  Hardver konfiguráció
@@ -346,6 +347,10 @@ void goToDeepSleep() {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
+    RgbFader::fadeOut();
+    while (RgbFader::isFading()) {
+      vTaskDelay(pdMS_TO_TICKS(50));
+    }
     // LED ki, buzzer, majd GPIO hold
     applyPWM(0, 0, 0, 1000);
     //buzzerBeep(3000);
@@ -812,6 +817,8 @@ void setup() {
 
     lastJumperState = digitalRead(PIN_WIFIEN);
 
+    RgbFader::init(gamma10);
+
     // ── Flash adatok betöltése ─────────────────
     loadFromPreferences();
     ESP_LOGI(TAGMAIN, "%d szin betoltve, aktiv: %d, alvasi ido: %d perc",
@@ -861,8 +868,12 @@ void setup() {
   buzzerBeepAsync(500); // Visszajelzés a sikeres bekapcsolásról
   g_ledsOn = true; // Az új módban ez a flag vezérli a timeout logikát
 
-  applyPWM(colors[activeIndex].r, colors[activeIndex].g, colors[activeIndex].b,
-           colors[activeIndex].freq);
+  // Ébredéskor fade-in (fekete → aktív szín)
+  RgbFader::fadeIn(colors[activeIndex].r, colors[activeIndex].g,
+                   colors[activeIndex].b, colors[activeIndex].freq);
+  //  applyPWM(colors[activeIndex].r, colors[activeIndex].g,
+  //  colors[activeIndex].b,
+  //           colors[activeIndex].freq);
   activeStartMs = millis();
 
 #else // USE_ALWAYS_RUNNING_MODE
@@ -930,8 +941,10 @@ void setup() {
 #endif // WIFI_LED_VILLOGAS
 
     if (g_ledsOn) {
-      applyPWM(colors[activeIndex].r, colors[activeIndex].g,
-               colors[activeIndex].b, colors[activeIndex].freq);
+//      applyPWM(colors[activeIndex].r, colors[activeIndex].g,
+//               colors[activeIndex].b, colors[activeIndex].freq);
+    RgbFader::fadeIn(colors[activeIndex].r, colors[activeIndex].g,
+                 colors[activeIndex].b, colors[activeIndex].freq);
     }
     activeStartMs = millis();
 }
@@ -999,8 +1012,8 @@ void loop() {
         // Ébresztési gombnyomás "lenyelése" – várjuk az elengedést
         if (digitalRead(NYOMOGOMB) == HIGH) {
           g_skipBtnUntilRelease = false;
-          lastRaw = HIGH;
-          debouncedBtn = HIGH;
+          lastRaw = false;
+          debouncedBtn = false;
           btnWasPressed = false;
         }
       } else {
@@ -1048,7 +1061,8 @@ void loop() {
             cf = colors[activeIndex].freq;
             UNLOCK_STATE();
           }
-          applyPWM(cr, cg, cb, cf);
+          //applyPWM(cr, cg, cb, cf);
+          RgbFader::crossFade(cr, cg, cb, cf);
           g_ledsOn = true;
           activeStartMs = millis();
           pendingWsUpdate = true;
