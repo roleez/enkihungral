@@ -1068,6 +1068,13 @@ void loop() {
           pendingWsUpdate = true;
           pendingNvsSave = true;
           lastChangeMs = millis();
+
+          // ── Rövid csippanás ──────────────────────────────────────
+          digitalWrite(PIEZO, HIGH);
+          vTaskDelay(pdMS_TO_TICKS(150));
+          digitalWrite(PIEZO, LOW);
+          // ─────────────────────────────────────────────────────────
+
           ESP_LOGI(TAGMAIN, "[BTN] Szin leptes -> %d (dur=%lums)", activeIndex,
                    dur);
         }
