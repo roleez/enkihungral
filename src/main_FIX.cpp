@@ -35,11 +35,40 @@
 //
 //  A define engedélyezéséhez távolítsd el a komment jelet:
 // ─────────────────────────────────────────────────────────────────
+#define CORE_DEBUG_LEVEL 3
 //#define USE_ALWAYS_RUNNING_MODE
 #define WIFI_LED_VILLOGAS
 //#define URESC3
+
+// ─────────────────────────────────────────────────────────────────
+//  USE_FIXED_COLORS: Fix színtábla + fix sleepMinutes mód
+//
+//  Ha AKTÍV (#define USE_FIXED_COLORS):
+//    → A colors[] tömb induláskor a DEFAULT_COLORS-ból töltődik fel.
+//    → colorCount és MAX_COLORS fix 7.
+//    → sleepMinutes fix FIXED_SLEEP_MINUTES értékre áll.
+//    → Flash-be csak az activeIndex kerül mentésre/betöltésre.
+//    → Webes felületen a szín/alvásidő módosítás/mentés parancsok
+//      (ADD, DEL, NAME, SLEEP, SAVE) nem hajtódnak végre.
+//
+//  Ha NEM AKTÍV (kommentezve):
+//    → Eredeti Preferences-alapú működés: minden a flash-ből jön,
+//      webes felületen módosítható és menthető.
+//
+//  A define engedélyezéséhez távolítsd el a komment jelet:
+// ─────────────────────────────────────────────────────────────────
+//#define USE_FIXED_COLORS
+
+// Fix alvási idő USE_FIXED_COLORS módban (percben, 5–60)
+//#define FIXED_SLEEP_MINUTES  10
+
 // ════════════════════════════════════════════════════════════════
 
+#include "FilteredSensorASM.h"
+#include "KalmanFilter.h"
+#include "RgbFader.h"
+#include "gamma10.h"
+#include "webpage.h"
 #include <Arduino.h>
 #include <DNSServer.h>
 #include <ESPAsyncWebServer.h>
@@ -53,9 +82,7 @@
 #include <esp_sleep.h>
 #include <esp_wifi.h>
 #include <freertos/semphr.h>
-#include "webpage.h"
-#include "gamma10.h"
-#include "RgbFader.h"
+#include <nvs_flash.h>
 
 // ─────────────────────────────────────────────
 //  Hardver konfiguráció
@@ -72,7 +99,13 @@
 #define PIN_BUILTIN_LED  8
 
 #define PWM_RES     10           // 8 bit felbontás → 0–255
-#define MAX_COLORS  25          // Maximum tárolható szín
+// USE_FIXED_COLORS módban MAX_COLORS és colorCount fix 7,
+// egyébként MAX_COLORS 25 (webes felületen bővíthető).
+#ifdef USE_FIXED_COLORS
+  #define MAX_COLORS  DEFAULT_COLORS_COUNT
+#else
+  #define MAX_COLORS  25          // Maximum tárolható szín
+#endif
 #define BEEPDB      3           // hányszor csipogjon
 
 // Alacsony akku küszöb: ez alatt kényszeres deep sleep
@@ -120,13 +153,13 @@ struct BuzzerParams {
 //  eltávolítva a félreértések elkerüléséért.
 // ─────────────────────────────────────────────
 static const ColorEntry DEFAULT_COLORS[7] = {
-    { "Vörös",    255, 0,   0,   396 },
-    { "Narancs",  255, 165, 0,   417 },
-    { "Sárga",    255, 255, 0,   528 },
-    { "Zöld",     0,   128, 0,   639 },
-    { "Kék",      0,   0,   255, 741 },
-    { "Indigó",   75,  0,   130, 852 },
-    { "Ibolya",   238, 130, 238, 963 },
+    { "Vörös",    240, 0,   0,   396 },
+    { "Narancs",  235, 65,  0,   417 },
+    { "Sárga",    200, 200, 0,   528 },
+    { "Zöld",     0,   250, 0,   639 },
+    { "Kék",      0,   0,   250, 741 },
+    { "Indigó",   90,  0,   156, 852 },
+    { "Ibolya",   166, 91,  166, 963 },
 };
 
 // ─────────────────────────────────────────────
@@ -176,6 +209,12 @@ uint32_t activeStartMs = 0;
 static float    g_battVoltage    = 0.0f;
 static uint32_t g_battLastReadMs = 0;
 
+// Kalman szűrő az akkufeszültséghez
+// initial_x=3.7 (tipikus Li-ion), P=1.0, Q=0.0005, R=0.5
+// Q nagyon kicsi  → lassan követi a változást (lomha)
+// R nagy          → nem bízik a nyers mérésben
+static KalmanFilter g_battKalman(4.1f, 1.0f, 0.006f, 0.5f);
+
 // ── [NEW ALWAYS RUNNING MODE] Állapotváltozók ────────────────────
 #ifdef USE_ALWAYS_RUNNING_MODE
 
@@ -197,14 +236,19 @@ String buildStatusJson();
 //  V_adc  = ADC_érték / 4095 * 3.3
 //  FIGYELEM: Csak a loop taskból hívd (ADC nem thread-safe)!
 // ─────────────────────────────────────────────
+static FilteredSensorASM g_battSensor(AKKUFESZ);
+
 float readBatteryVoltage() {
-    int sum = 0;
+/*    int sum = 0;
     for (int i = 0; i < 8; i++) {
         sum += analogRead(AKKUFESZ);
         vTaskDelay(2);
     }
     float adc_v = (sum / 8.0f) / 4095.0f * 3.3f;
-    return adc_v * 1.4103f;
+    return adc_v * 1.4103f;*/
+float adc_v = g_battSensor.readRaw() / 4095.0f * 3.3f;
+float raw = adc_v * 1.4103f;
+return g_battKalman.update(raw);
 }
 
 // ─────────────────────────────────────────────
@@ -347,6 +391,7 @@ void goToDeepSleep() {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
+    applyPWM(0, 0, 0, 1000);
     RgbFader::fadeOut();
     while (RgbFader::isFading()) {
       vTaskDelay(pdMS_TO_TICKS(50));
@@ -402,12 +447,18 @@ static void blinkTask(void* pvParameters) {
     pinMode(PIN_BUILTIN_LED, OUTPUT);
     ESP_LOGI(TAGMAIN, "[ARM] Blink task elindult (GPIO%d).", PIN_BUILTIN_LED);
 
+#ifdef URESC3
+    bool isC3 = HIGH;
+#else
+    bool isC3 = LOW;
+#endif
+
     while (true) {
-        if (wifiRunning) {
-            digitalWrite(PIN_BUILTIN_LED, LOW);
-            vTaskDelay(pdMS_TO_TICKS(150));
-            digitalWrite(PIN_BUILTIN_LED, HIGH);
-            vTaskDelay(pdMS_TO_TICKS(750));
+      if (wifiRunning && digitalRead(PIN_WIFIEN) == isC3) {
+        digitalWrite(PIN_BUILTIN_LED, LOW);
+        vTaskDelay(pdMS_TO_TICKS(150));
+        digitalWrite(PIN_BUILTIN_LED, HIGH);
+        vTaskDelay(pdMS_TO_TICKS(750));
         }
     }
     // Ide soha nem jutunk, de formálisan helyes:
@@ -417,8 +468,38 @@ static void blinkTask(void* pvParameters) {
 
 // ─────────────────────────────────────────────
 //  Preferences – betöltés
+//
+//  USE_FIXED_COLORS módban:
+//    - colors[] mindig a DEFAULT_COLORS-ból töltődik fel (flash-t nem olvas)
+//    - colorCount = DEFAULT_COLORS_COUNT (fix)
+//    - sleepMinutes = FIXED_SLEEP_MINUTES (fix)
+//    - Flash-ből csak az activeIndex kerül visszatöltésre
+//
+//  Eredeti módban (USE_FIXED_COLORS nincs definiálva):
+//    - Minden a flash-ből jön, mint eddig
 // ─────────────────────────────────────────────
 void loadFromPreferences() {
+#ifdef USE_FIXED_COLORS
+    // ── Fix mód: colors[] feltöltése DEFAULT_COLORS-ból ──────────
+    colorCount   = DEFAULT_COLORS_COUNT;
+    sleepMinutes = FIXED_SLEEP_MINUTES;
+    for (int i = 0; i < DEFAULT_COLORS_COUNT; i++) colors[i] = DEFAULT_COLORS[i];
+
+    // Csak az activeIndex-et töltjük vissza a flash-ből
+    bool opened = prefs.begin("enki", true);
+    if (opened) {
+        activeIndex = prefs.getInt("idx", 0);
+        prefs.end();
+    } else {
+        ESP_LOGW(TAGMAIN, "[FIXED] NVS megnyitas sikertelen – activeIndex=0");
+        activeIndex = 0;
+    }
+    if (activeIndex >= colorCount) activeIndex = 0;
+    ESP_LOGI(TAGMAIN, "[FIXED] Default szinek betoltve (%d db), aktiv: %d, alvasi ido: %d perc (fix)",
+             colorCount, activeIndex, sleepMinutes);
+
+#else
+    // ── Eredeti mód: minden a flash-ből ──────────────────────────
     bool opened = prefs.begin("enki", true);
     if (!opened) {
         ESP_LOGE(TAGMAIN, "NVS megnyitas sikertelen – alapertekek betoltve");
@@ -454,14 +535,27 @@ void loadFromPreferences() {
 
     if (activeIndex >= colorCount) activeIndex = 0;
     sleepMinutes = constrain(sleepMinutes, 5, 60);
+#endif // USE_FIXED_COLORS
 }
 
 // ─────────────────────────────────────────────
 //  Preferences – teljes mentés
-//  FIGYELEM: Lassú (flash írás). Csak mutex-en kívül hívd,
-//  az állapotot előtte lokális változókba másold!
+//
+//  USE_FIXED_COLORS módban: csak az activeIndex-et menti
+//  (a szín- és sleepMinutes adatok fixek, felesleges lenne flash-be írni)
+//
+//  Eredeti módban: minden mentődik (activeIndex + sleepMinutes + colors[])
+//  FIGYELEM: Lassú (flash írás). Csak mutex-en kívül hívd!
 // ─────────────────────────────────────────────
 void saveToPreferences() {
+#ifdef USE_FIXED_COLORS
+    // Fix mód: csak az activeIndex kerül flash-be
+    prefs.begin("enki", false);
+    prefs.putInt("idx", activeIndex);
+    prefs.end();
+    ESP_LOGI(TAGMAIN, "[FIXED] activeIndex mentve: %d", activeIndex);
+#else
+    // Eredeti mód: teljes mentés
     prefs.begin("enki", false);
     prefs.putInt("idx",      activeIndex);
     prefs.putUChar("sleepm", sleepMinutes);
@@ -476,15 +570,19 @@ void saveToPreferences() {
     }
     prefs.end();
     ESP_LOGI(TAGMAIN, "Preferences mentve.");
+#endif // USE_FIXED_COLORS
 }
 
 // ─────────────────────────────────────────────
-//  Csak az index + sleepMinutes mentése (gyors)
+//  Csak az index (+ sleepMinutes) mentése (gyors)
+//  USE_FIXED_COLORS módban sleepMinutes nem kerül mentésre (fix érték)
 // ─────────────────────────────────────────────
 void saveIndexAndTimer() {
     prefs.begin("enki", false);
-    prefs.putInt("idx",      activeIndex);
+    prefs.putInt("idx", activeIndex);
+#ifndef USE_FIXED_COLORS
     prefs.putUChar("sleepm", sleepMinutes);
+#endif
     prefs.end();
 }
 
@@ -539,6 +637,13 @@ void handleWsMessage(AsyncWebSocketClient* client, const String& msg) {
             bool valid = false;
             if (LOCK_STATE() == pdTRUE) {
                 if (idx >= 0 && idx < colorCount) {
+#ifdef USE_FIXED_COLORS
+                    // Fix módban csak az activeIndex váltható,
+                    // a szín értékei nem módosíthatók (DEFAULT_COLORS fix)
+                    activeIndex = idx;
+                    cr = colors[idx].r; cg = colors[idx].g;
+                    cb = colors[idx].b; cf = colors[idx].freq;
+#else
                     colors[idx].r    = (uint8_t)constrain(r,    0, 255);
                     colors[idx].g    = (uint8_t)constrain(g,    0, 255);
                     colors[idx].b    = (uint8_t)constrain(b,    0, 255);
@@ -546,6 +651,7 @@ void handleWsMessage(AsyncWebSocketClient* client, const String& msg) {
                     activeIndex = idx;
                     cr = colors[idx].r; cg = colors[idx].g;
                     cb = colors[idx].b; cf = colors[idx].freq;
+#endif
                     valid = true;
                 }
                 UNLOCK_STATE();
@@ -565,6 +671,11 @@ void handleWsMessage(AsyncWebSocketClient* client, const String& msg) {
         }
     }
     else if (msg.startsWith("NAME:")) {
+#ifdef USE_FIXED_COLORS
+        // Fix módban a nevek nem módosíthatók
+        ESP_LOGW(TAGMAIN, "[FIXED] NAME parancs figyelmen kivul hagyva.");
+        if (client) client->text(buildStatusJson());
+#else
         int idx; char name[32];
         if (sscanf(msg.c_str(), "NAME:%d:%31[^\n]", &idx, name) == 2) {
             if (LOCK_STATE() == pdTRUE) {
@@ -575,8 +686,14 @@ void handleWsMessage(AsyncWebSocketClient* client, const String& msg) {
                 UNLOCK_STATE();
             }
         }
+#endif // USE_FIXED_COLORS
     }
     else if (msg.startsWith("SLEEP:")) {
+#ifdef USE_FIXED_COLORS
+        // Fix módban a sleepMinutes nem módosítható
+        ESP_LOGW(TAGMAIN, "[FIXED] SLEEP parancs figyelmen kivul hagyva (fix: %d perc).", sleepMinutes);
+        if (client) client->text(buildStatusJson());
+#else
         int m;
         if (sscanf(msg.c_str(), "SLEEP:%d", &m) == 1) {
             if (LOCK_STATE() == pdTRUE) {
@@ -584,6 +701,7 @@ void handleWsMessage(AsyncWebSocketClient* client, const String& msg) {
                 UNLOCK_STATE();
             }
         }
+#endif // USE_FIXED_COLORS
     }
     else if (msg == "SAVE") {
         // FIX S3: Az állapotot mutex-en belül másoljuk ki,
@@ -613,6 +731,10 @@ void handleWsMessage(AsyncWebSocketClient* client, const String& msg) {
         if (client) client->text(buildStatusJson());
     }
     else if (msg == "ADD") {
+#ifdef USE_FIXED_COLORS
+        ESP_LOGW(TAGMAIN, "[FIXED] ADD parancs figyelmen kivul hagyva.");
+        if (client) client->text(buildStatusJson());
+#else
         if (LOCK_STATE() == pdTRUE) {
             if (colorCount < MAX_COLORS) {
                 strncpy(colors[colorCount].name, "Uj szin", sizeof(colors[colorCount].name));
@@ -625,8 +747,13 @@ void handleWsMessage(AsyncWebSocketClient* client, const String& msg) {
             }
             UNLOCK_STATE();
         }
+#endif // USE_FIXED_COLORS
     }
     else if (msg.startsWith("DEL:")) {
+#ifdef USE_FIXED_COLORS
+        ESP_LOGW(TAGMAIN, "[FIXED] DEL parancs figyelmen kivul hagyva.");
+        if (client) client->text(buildStatusJson());
+#else
         int idx;
         if (sscanf(msg.c_str(), "DEL:%d", &idx) == 1) {
             if (LOCK_STATE() == pdTRUE) {
@@ -639,6 +766,7 @@ void handleWsMessage(AsyncWebSocketClient* client, const String& msg) {
                 UNLOCK_STATE();
             }
         }
+#endif // USE_FIXED_COLORS
     }
 }
 
@@ -723,12 +851,24 @@ void setupRoutes() {
 void startWifi() {
     if (wifiRunning) return;
 
+    WiFi.disconnect(false);
+    WiFi.mode(WIFI_OFF);
+    vTaskDelay(pdMS_TO_TICKS(250));
+
     ESP_LOGI(TAGMAIN, "WiFi AP indul...");
+
+    WiFi.mode(WIFI_AP);
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20);
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    WiFi.setTxPower(WIFI_POWER_8_5dBm);
+
+    //buzzerBeepAsync(100);
 
     WiFi.softAPConfig(local_ip, gateway, subnet);
     WiFi.softAP(AP_SSID, nullptr, 1, 0, 2);
-    esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20);
-    esp_wifi_set_ps(WIFI_PS_NONE);
+    WiFi.setTxPower(WIFI_POWER_8_5dBm);
 
     ESP_LOGI(TAGMAIN, "AP IP: %s", WiFi.softAPIP().toString().c_str());
 
@@ -759,6 +899,8 @@ void startWifi() {
     wifiRunning  = true;
     wifiStartMs  = millis();
     ESP_LOGI(TAGMAIN, "HTTP szerver elindult.");
+
+    //buzzerErrorAsync();
 }
 
 // ─────────────────────────────────────────────
@@ -782,12 +924,38 @@ SET_LOOP_TASK_STACK_SIZE(6144);
 
 void setup() {
     //Serial.begin(115200);
-    //delay(1000);
+    //delay(3000);
+
+    /*{
+      Preferences checkPrefs;
+      checkPrefs.begin("enki_sys", true); // read-only
+      bool alreadyInit = checkPrefs.getBool("nvsinit", false);
+      checkPrefs.end();
+
+      if (!alreadyInit) {
+        ESP_LOGW(TAGMAIN, "Elso boot: NVS erase+init fut...");
+        nvs_flash_erase();
+        nvs_flash_init();
+        // Flag beírása az új, tiszta NVS-be
+        Preferences writePrefs;
+        writePrefs.begin("enki_sys", false);
+        writePrefs.putBool("nvsinit", true);
+        writePrefs.end();
+        ESP_LOGW(TAGMAIN, "NVS inicializalva, flag elmentve.");
+      } else {
+        ESP_LOGI(TAGMAIN, "NVS mar inicializalva, kihagyva.");
+      }
+    }*/
 
 #ifdef USE_ALWAYS_RUNNING_MODE
     ESP_LOGW(TAGMAIN, "Indul... [ALWAYS RUNNING MODE]");
 #else
     ESP_LOGW(TAGMAIN, "Indul... [DEEP SLEEP MODE]");
+#endif
+#ifdef USE_FIXED_COLORS
+    ESP_LOGW(TAGMAIN, "Szin mod: [FIX SZINTABLA] - DEFAULT_COLORS, sleepMinutes=%d", FIXED_SLEEP_MINUTES);
+#else
+    ESP_LOGW(TAGMAIN, "Szin mod: [PREFERENCES] - webes feluleten modosithato");
 #endif
 
     // ── Mutex létrehozása – minden más előtt ──
@@ -806,6 +974,8 @@ void setup() {
 
     analogReadResolution(12);
     analogSetAttenuation(ADC_11db);
+
+    g_battSensor.begin();
 
     // ── PWM csatornák inicializálása ──────────
     ledcSetup(0, 1000, PWM_RES);
@@ -869,8 +1039,7 @@ void setup() {
   g_ledsOn = true; // Az új módban ez a flag vezérli a timeout logikát
 
   // Ébredéskor fade-in (fekete → aktív szín)
-  RgbFader::fadeIn(colors[activeIndex].r, colors[activeIndex].g,
-                   colors[activeIndex].b, colors[activeIndex].freq);
+  //RgbFader::fadeIn(colors[activeIndex].r, colors[activeIndex].g, colors[activeIndex].b, colors[activeIndex].freq);
   //  applyPWM(colors[activeIndex].r, colors[activeIndex].g,
   //  colors[activeIndex].b,
   //           colors[activeIndex].freq);
@@ -1120,5 +1289,17 @@ void loop() {
     }
 
     // Kis szünet, CPU kímélése (mindkét módban)
+
+    /*static uint32_t lastCheck = 0;
+    if (millis() - lastCheck > 5000) {
+      lastCheck = millis();
+      Serial.printf("AP állomások száma: %d\n\r", WiFi.softAPgetStationNum());
+      Serial.printf("AP IP: %s\n\r", WiFi.softAPIP().toString().c_str());
+      Serial.printf("WiFi mode: %d\n\r", WiFi.getMode());
+      int8_t txPower = 0;
+      esp_wifi_get_max_tx_power(&txPower);
+      Serial.printf("TX power: %d (%.1f dBm)\n\r", txPower, txPower / 4.0f);
+    }*/
+
     vTaskDelay(pdMS_TO_TICKS(20));
 }

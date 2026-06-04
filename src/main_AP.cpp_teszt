@@ -1,0 +1,66 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <esp_phy_init.h>
+#include <esp_wifi.h>
+
+
+void setup() {
+  Serial.begin(115200);
+  delay(3000);
+
+  Serial.println("=== AP TESZT ===");
+
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+  esp_wifi_set_ps(WIFI_PS_NONE); // power save KIKAPCS
+
+  // Teljes WiFi stack újraindítás
+  WiFi.mode(WIFI_OFF);
+  esp_wifi_stop();
+  esp_wifi_deinit();
+  delay(500);
+
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  esp_wifi_init(&cfg);
+  esp_wifi_start();
+  delay(500);
+
+  WiFi.mode(WIFI_AP);
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  esp_wifi_set_ps(WIFI_PS_NONE); // még egyszer, AP mode után is
+  delay(500);
+
+  esp_wifi_set_max_tx_power(84);
+
+  bool ok = WiFi.softAP("TESZT_AP", nullptr, 1, 0, 4);
+  Serial.printf("softAP result: %d\n\r", ok);
+
+  // AP konfig visszaolvasás
+  wifi_config_t ap_cfg;
+  esp_wifi_get_config(WIFI_IF_AP, &ap_cfg);
+  Serial.printf("SSID: %s\n\r", ap_cfg.ap.ssid);
+  Serial.printf("Channel: %d\n\r", ap_cfg.ap.channel);
+  Serial.printf("Max conn: %d\n\r", ap_cfg.ap.max_connection);
+  Serial.printf("Authmode: %d\n\r", ap_cfg.ap.authmode);
+
+  // TX power visszaolvasás
+  int8_t power;
+  esp_wifi_get_max_tx_power(&power);
+  Serial.printf("TX power: %d (%.2f dBm)\n\r", power, power * 0.25f);
+
+  // AP IP
+  Serial.printf("AP IP: %s\n\r", WiFi.softAPIP().toString().c_str());
+
+  // WiFi mode
+  wifi_mode_t mode;
+  esp_wifi_get_mode(&mode);
+  Serial.printf("WiFi mode (esp): %d\n\r", mode);
+}
+
+void loop() {
+  static uint32_t last = 0;
+  if (millis() - last > 5000) {
+    last = millis();
+    Serial.printf("Allomások: %d\n\r", WiFi.softAPgetStationNum());
+  }
+  delay(10);
+}
