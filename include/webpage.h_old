@@ -413,7 +413,6 @@ const char INDEX_HTML[] PROGMEM = R"rawhtml(
 let colors      = [];
 let activeIndex = -1;
 let sleepM      = 10;
-let sleepDirty  = false;   // true ha a felhasználó módosította, de még nem mentette
 let ws          = null;
 
 // ────────────────────────────────────────────
@@ -458,9 +457,7 @@ function applyState(d) {
   }
   if (d.sleepm !== undefined) {
     sleepM = d.sleepm;
-    if (!sleepDirty) {
-      document.getElementById('sleepInput').value = sleepM;
-    }
+    document.getElementById('sleepInput').value = sleepM;
   }
   if (d.colors) {
     colors      = d.colors;
@@ -626,10 +623,6 @@ document.getElementById('btnAdd').addEventListener('click', () => {
   renderList();
 });
 
-document.getElementById('sleepInput').addEventListener('input', () => {
-  sleepDirty = true;
-});
-
 // ────────────────────────────────────────────
 //  Mentés gomb
 // ────────────────────────────────────────────
@@ -638,7 +631,6 @@ document.getElementById('btnSave').addEventListener('click', () => {
   const m = parseInt(document.getElementById('sleepInput').value) || 10;
   sleepM  = Math.max(5, Math.min(60, m));
   document.getElementById('sleepInput').value = sleepM;
-  sleepDirty = false;   // mentés után szinkronban van a szerverrel
   wsSend('SLEEP:' + sleepM);
 
   // Mentés

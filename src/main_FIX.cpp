@@ -657,7 +657,8 @@ void handleWsMessage(AsyncWebSocketClient* client, const String& msg) {
                 UNLOCK_STATE();
             }
             if (valid) {
-                applyPWM(cr, cg, cb, cf);   // PWM hívás mutex-en kívül
+                //applyPWM(cr, cg, cb, cf);   // PWM hívás mutex-en kívül
+                RgbFader::crossFade(cr, cg, cb, cf);
 
                 // [NEW ALWAYS RUNNING MODE] SET parancsnál a LED-ek bekapcsolnak,
                 // az activeStartMs frissül, hogy a timeout újra induljon.
@@ -700,6 +701,7 @@ void handleWsMessage(AsyncWebSocketClient* client, const String& msg) {
                 sleepMinutes = (uint8_t)constrain(m, 5, 60);
                 UNLOCK_STATE();
             }
+            saveIndexAndTimer();
         }
 #endif // USE_FIXED_COLORS
     }
@@ -719,7 +721,8 @@ void handleWsMessage(AsyncWebSocketClient* client, const String& msg) {
             activeStartMs = millis();
             UNLOCK_STATE();
         }
-        applyPWM(cr, cg, cb, cf);
+        //applyPWM(cr, cg, cb, cf);
+        RgbFader::crossFade(cr, cg, cb, cf);
 
         // [NEW ALWAYS RUNNING MODE] SAVE parancs is bekapcsolja a LED-eket
         // és újraindítja a timeoutot
