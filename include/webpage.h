@@ -12,7 +12,7 @@ const char INDEX_HTML[] PROGMEM = R"rawhtml(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Enki Hungrál</title>
+<title>Enki Hungrál - v0.2</title>
 <style>
   /* ── Betűtípus ─────────────────────────────────── */
   @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;500;700&display=swap');
@@ -341,7 +341,7 @@ const char INDEX_HTML[] PROGMEM = R"rawhtml(
 <!-- Fejléc -->
 <header>
   <div class="logo-dot"></div>
-  <h1>ENKI HUNGRÁL</h1>
+  <h1>ENKI HUNGRÁL - v0.2</h1>
   <div class="ws-badge" id="wsBadge">● OFFLINE</div>
 </header>
 
@@ -370,7 +370,7 @@ const char INDEX_HTML[] PROGMEM = R"rawhtml(
 <div class="card">
   <div class="card-title">Világítási idő</div>
   <div class="sleep-row">
-    <label>Alvásig hátralévő idő (perc)</label>
+    <label>Fény bekapcsolási idő (perc)</label>
     <input type="number" id="sleepInput" min="5" max="60" value="10">
     <span>perc</span>
   </div>
@@ -415,6 +415,7 @@ let activeIndex = -1;
 let sleepM      = 10;
 let sleepDirty  = false;   // true ha a felhasználó módosította, de még nem mentette
 let ws          = null;
+let connDate    = '';
 
 // ────────────────────────────────────────────
 //  WebSocket
@@ -437,8 +438,11 @@ function connectWS() {
     try {
       const d = JSON.parse(evt.data);
       applyState(d);
-    } catch(e) { /* nem JSON */ }
-  };
+    } catch(e) { 
+      connDate = evt.data;
+      const badge = document.getElementById('wsBadge');
+      badge.textContent = '● ONLINE  ' + connDate; }
+    };
 }
 
 function wsSend(msg) {

@@ -24,8 +24,9 @@ public:
 
   int readRaw() {
     for (int i = 0; i < 7; i++) {
-      samples[i] = analogRead(PIN);
-      vTaskDelay(15);
+      //samples[i] = analogRead(PIN);
+      samples[i] = analogReadMilliVolts(PIN);
+      vTaskDelay(10);
     }
 
     // Ugyanaz a 7-elemű rendezőhálózat, csak C++-ban

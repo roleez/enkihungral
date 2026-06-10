@@ -35,6 +35,7 @@
 //
 //  A define engedélyezéséhez távolítsd el a komment jelet:
 // ─────────────────────────────────────────────────────────────────
+
 #define CORE_DEBUG_LEVEL 3
 //#define USE_ALWAYS_RUNNING_MODE
 #define WIFI_LED_VILLOGAS
@@ -68,6 +69,7 @@
 #include "KalmanFilter.h"
 #include "RgbFader.h"
 #include "gamma10.h"
+#include "linearmultimapC3ADC.h"
 #include "webpage.h"
 #include <Arduino.h>
 #include <DNSServer.h>
@@ -83,7 +85,10 @@
 #include <esp_wifi.h>
 #include <freertos/semphr.h>
 #include <nvs_flash.h>
+#include "version.h"
 
+extern char convertedDate[15];
+extern const char *inputDate;
 // ─────────────────────────────────────────────
 //  Hardver konfiguráció
 // ─────────────────────────────────────────────
@@ -115,6 +120,8 @@
 // Gomb debounce idő (ms)
 #define BTN_DEBOUNCE_MS  30
 #define BTN_EBRED        1500
+#define WS_PUSH_MS       2000
+#define AKKU_MEAS_MS     4000
 
 #define DEFAULT_COLORS_COUNT 7
 
@@ -246,8 +253,11 @@ float readBatteryVoltage() {
     }
     float adc_v = (sum / 8.0f) / 4095.0f * 3.3f;
     return adc_v * 1.4103f;*/
-float adc_v = g_battSensor.readRaw() / 4095.0f * 3.3f;
-float raw = adc_v * 1.4103f;
+//float adc_v = g_battSensor.readRaw() / 4091.0f * 3.12f;
+int raw_adc = g_battSensor.readRaw();       // 2026.6.07 mV-ban jön, 0–4095 helyett
+//float adc_v = adcToVoltage(raw_adc);
+//float raw = adc_v * 1.4103f;
+float raw = raw_adc * 1.409f / 1000.0f; // mV → V, fesz.osztó korrekció  
 return g_battKalman.update(raw);
 }
 
@@ -381,6 +391,11 @@ static void releasePWMHold() {
 void goToDeepSleep() {
     ESP_LOGI(TAGMAIN, "Melyalvas indul...");
 
+    if (g_battVoltage > 1.0f) {
+      prefs.begin("enki", false);
+      prefs.putFloat("batt_v", g_battVoltage);
+      prefs.end();
+    }
     // FIX E3: WiFi leállítása – különben RF modul aktív marad sleep alatt
     if (wifiRunning) {
         ws.closeAll();
@@ -479,6 +494,15 @@ static void blinkTask(void* pvParameters) {
 //    - Minden a flash-ből jön, mint eddig
 // ─────────────────────────────────────────────
 void loadFromPreferences() {
+  // ── Kalman cold-start: mentett feszültségről indul, nem 4.1f-ről ──
+  prefs.begin("enki", true);
+  float savedVolt = prefs.getFloat("batt_v", 4.1f);
+  prefs.end();
+  savedVolt = constrain(savedVolt, 2.5f, 4.3f); // szanity check
+  //g_battKalman = KalmanFilter(savedVolt, 0.1f, 0.006f, 0.5f);
+  g_battKalman.reset(savedVolt, 0.1f);
+  // P=0.1 (kis bizonytalanság – jó kezdőérték van), Q és R ugyanaz
+  ESP_LOGI(TAGMAIN, "Kalman init: %.2f V (NVS)", savedVolt);
 #ifdef USE_FIXED_COLORS
     // ── Fix mód: colors[] feltöltése DEFAULT_COLORS-ból ──────────
     colorCount   = DEFAULT_COLORS_COUNT;
@@ -780,6 +804,7 @@ void onWsEvent(AsyncWebSocket* srv, AsyncWebSocketClient* client,
                AwsEventType type, void* arg, uint8_t* data, size_t len) {
     if (type == WS_EVT_CONNECT) {
         ESP_LOGI(TAGMAIN, "WS kliens csatlakozott: %u", client->id());
+        client->text(String(convertedDate));
         client->text(buildStatusJson());
     }
     else if (type == WS_EVT_DISCONNECT) {
@@ -1047,6 +1072,11 @@ void setup() {
   //  colors[activeIndex].b,
   //           colors[activeIndex].freq);
   activeStartMs = millis();
+  
+  convertDate(inputDate, convertedDate);
+  char result[3];
+  convertTime(result);
+  strcat(convertedDate, result);
 
 #else // USE_ALWAYS_RUNNING_MODE
 
@@ -1119,6 +1149,12 @@ void setup() {
                  colors[activeIndex].b, colors[activeIndex].freq);
     }
     activeStartMs = millis();
+
+    for (int i = 0; i < 5; i++) {
+      g_battVoltage = readBatteryVoltage();
+      vTaskDelay(pdMS_TO_TICKS(25));
+    }
+    g_battLastReadMs = millis();
 }
 
 // ─────────────────────────────────────────────
@@ -1143,22 +1179,22 @@ void loop() {
     // ── Akkufeszültség mérés (percenként) ─────
     // Alacsony akku esetén is csak LED kikapcsolás, az MCU fut tovább.
     // Ha a feszültség extrém alacsony (brownout közel), a hardver is véd.
-    static uint32_t lastBattPushMs = 0;
-    if (millis() - g_battLastReadMs > 60000) {
-        g_battVoltage = readBatteryVoltage();
-        g_battLastReadMs = millis();
-        ESP_LOGI(TAGMAIN, "[ARM] Akku: %.2f V", g_battVoltage);
+    static uint32_t lastBattMeasMs = 0;
+    if (millis() - g_battLastReadMs > AKKU_MEAS_MS) {
+      g_battLastReadMs = millis();
+      g_battVoltage = readBatteryVoltage();
+      ESP_LOGI(TAGMAIN, "[ARM] Akku: %.2f V", g_battVoltage);
 
-        if (g_battVoltage < BATT_LOW_V && g_battVoltage > 1.0f) {
-            ESP_LOGW(TAGMAIN, "[ARM] Alacsony akku (%.2f V), LED-ek lekapcsolva.",
-                     g_battVoltage);
-            if (g_ledsOn) {
-                /*buzzerErrorAsync();
-                applyPWM(0, 0, 0, 1000);
-                g_ledsOn = false;
-                voltFeszHiba = true;
-                ws.textAll(buildStatusJson());*/
-                buzzerError(4000);
+      if (g_battVoltage < BATT_LOW_V && g_battVoltage > 1.0f) {
+        ESP_LOGW(TAGMAIN, "[ARM] Alacsony akku (%.2f V), LED-ek lekapcsolva.",
+                 g_battVoltage);
+        if (g_ledsOn) {
+          /*buzzerErrorAsync();
+          applyPWM(0, 0, 0, 1000);
+          g_ledsOn = false;
+          voltFeszHiba = true;
+          ws.textAll(buildStatusJson());*/
+          buzzerError(4000);
 #ifndef USE_ALWAYS_RUNNING_MODE
                 goToDeepSleep();
 #endif
@@ -1166,10 +1202,11 @@ void loop() {
         }
     }
 
-    if (wifiRunning && (millis() - lastBattPushMs > BTN_EBRED)) {
+    // ── WS push (1500 ms) – csak cacheit értéket küld, NEM mér ────
+    static uint32_t lastBattPushMs = 0;
+    if (wifiRunning && (millis() - lastBattPushMs > WS_PUSH_MS)) {
       lastBattPushMs = millis();
-      g_battVoltage = readBatteryVoltage(); // ← friss mérés push előtt
-      ws.textAll(buildStatusJson());
+      ws.textAll(buildStatusJson()); // g_battVoltage már frissítve fentről
     }
 
     // ── Gomb: felfutó élre színváltás / 5mp tartva → azonnal deep sleep ──
